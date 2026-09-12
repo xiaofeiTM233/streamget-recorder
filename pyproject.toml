@@ -1,0 +1,17 @@
+[project]
+name = "streamget-recorder"
+version = "0.1.0"
+description = "基于 streamget + FFmpeg 的多平台直播录播面板（后端服务）"
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "streamget>=4.0.10",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "aiosqlite>=0.20",
+    "pydantic-settings>=2.3",
+    "loguru>=0.7",
+]
+
+[tool.uv]
+package = false

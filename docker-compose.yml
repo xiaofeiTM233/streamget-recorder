@@ -1,0 +1,18 @@
+services:
+  recorder:
+    build: .
+    container_name: streamget-recorder
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - RECORDER_HOST=0.0.0.0
+      - RECORDER_PORT=8000
+      # 如需访问令牌，取消注释并修改：
+      # - RECORDER_ACCESS_TOKEN=change-me
+      # 代理（国际平台需要时取消注释）：
+      # - http_proxy=http://host.docker.internal:7890
+      # - https_proxy=http://host.docker.internal:7890
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
