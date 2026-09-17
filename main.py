@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import sys
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -157,7 +158,11 @@ app = create_app()
 def run() -> None:
     import uvicorn
 
-    uvicorn.run("main:app", host=config.host, port=config.port, log_config=None)
+    # 打包(PyInstaller)运行时无法按模块名重新导入，必须直接传 app 对象
+    if getattr(sys, "frozen", False):
+        uvicorn.run(app, host=config.host, port=config.port, log_config=None)
+    else:
+        uvicorn.run("main:app", host=config.host, port=config.port, log_config=None)
 
 
 if __name__ == "__main__":
