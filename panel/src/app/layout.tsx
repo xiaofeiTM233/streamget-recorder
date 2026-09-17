@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import AppShell from "@/components/AppShell";
+import ConnectionGate from "@/components/ConnectionGate";
 import Providers from "@/components/Providers";
 import "./globals.css";
 
@@ -13,7 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="zh-CN">
       <body>
         <Providers>
-          <AppShell>{children}</AppShell>
+          <ConnectionGate>{children}</ConnectionGate>
         </Providers>
       </body>
     </html>

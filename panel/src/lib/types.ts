@@ -2,6 +2,14 @@
 
 /** 与后端 API 契约对应的类型定义。 */
 
+/** 面板连接配置：服务端地址 + 访问令牌（存 localStorage）。 */
+export interface ConnectionConfig {
+  baseUrl: string;
+  token: string;
+  remember: boolean;
+  autoConnect: boolean;
+}
+
 /** 房间级设置覆盖：键为全局设置名，未出现的键跟随全局。 */
 export type RoomOverrides = Partial<{
   output_format: "mp4" | "flv";

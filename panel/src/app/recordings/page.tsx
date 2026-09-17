@@ -24,7 +24,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useState } from "react";
-import { formatSize, useBrowse, useRecordingMutations } from "@/lib/api";
+import { formatSize, getApiBase, getApiToken, useBrowse, useRecordingMutations } from "@/lib/api";
 import type { BrowseFile, BrowseFolder } from "@/lib/types";
 
 type Row =
@@ -32,8 +32,7 @@ type Row =
   | ({ key: string; type: "file" } & BrowseFile);
 
 function getTokenQs(): string {
-  if (typeof window === "undefined") return "";
-  const token = window.localStorage.getItem("recorder_token");
+  const token = getApiToken();
   return token ? `?token=${encodeURIComponent(token)}` : "";
 }
 
@@ -122,7 +121,7 @@ export default function RecordingsPage() {
         ) : (
           <Space size={14}>
             <Tooltip title="下载">
-              <a href={`${row.download_url}${getTokenQs()}`} target="_blank" rel="noreferrer">
+              <a href={`${getApiBase()}${row.download_url}${getTokenQs()}`} target="_blank" rel="noreferrer">
                 <DownloadOutlined style={{ fontSize: 16 }} />
               </a>
             </Tooltip>

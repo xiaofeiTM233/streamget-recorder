@@ -8,8 +8,7 @@ services:
       - TZ=Asia/Shanghai
       - RECORDER_HOST=0.0.0.0
       - RECORDER_PORT=8000
-      # 如需访问令牌，取消注释并修改：
-      # - RECORDER_ACCESS_TOKEN=change-me
+      # 访问令牌在网页"设置 → 关于与令牌"中设置（存于 data/settings.json），无需环境变量
       # 代理（国际平台需要时取消注释）：
       # - http_proxy=http://host.docker.internal:7890
       # - https_proxy=http://host.docker.internal:7890

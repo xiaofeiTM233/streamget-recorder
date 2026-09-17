@@ -6,10 +6,11 @@ import {
   SettingOutlined,
   TeamOutlined,
 } from "@ant-design/icons";
-import { Button, Input, Layout, Menu, Modal, Tag } from "antd";
+import { Button, Layout, Menu, Tag, Tooltip } from "antd";
+import { DisconnectOutlined } from "@ant-design/icons";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
-import { getToken, setToken } from "@/lib/api";
+import { useState, type ReactNode } from "react";
+import { useConnection } from "@/lib/connection";
 import { useEvents } from "@/lib/events";
 
 const MENU_ITEMS = [
@@ -22,19 +23,9 @@ const MENU_ITEMS = [
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { config, disconnect } = useConnection();
   const { connected } = useEvents();
   const [collapsed, setCollapsed] = useState(false);
-  const [tokenOpen, setTokenOpen] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState("");
-
-  useEffect(() => {
-    const handler = () => {
-      setTokenDraft(getToken());
-      setTokenOpen(true);
-    };
-    window.addEventListener("recorder:unauthorized", handler);
-    return () => window.removeEventListener("recorder:unauthorized", handler);
-  }, []);
 
   const current = pathname.replace(/\/+$/, "") || "/";
 
@@ -76,41 +67,24 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <span style={{ fontSize: 15, fontWeight: 600 }}>
             {MENU_ITEMS.find((item) => item.key === current)?.label ?? "仪表盘"}
           </span>
-          <Tag color={connected ? "green" : "red"} bordered={false}>
-            {connected ? "● 实时连接" : "● 未连接"}
-          </Tag>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
+            <Tag color={connected ? "green" : "red"} bordered={false}>
+              {connected ? "● 实时连接" : "● 未连接"}
+            </Tag>
+            <Tag color="blue" bordered={false} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis" }}>
+              {config.baseUrl || "当前页面来源"}
+            </Tag>
+            <Tooltip title="断开连接">
+              <Button
+                type="text"
+                icon={<DisconnectOutlined />}
+                onClick={disconnect}
+              />
+            </Tooltip>
+          </span>
         </Layout.Header>
         <Layout.Content style={{ margin: 16 }}>{children}</Layout.Content>
       </Layout>
-
-      <Modal
-        title="需要访问令牌"
-        open={tokenOpen}
-        onCancel={() => setTokenOpen(false)}
-        footer={[
-          <Button key="cancel" onClick={() => setTokenOpen(false)}>
-            取消
-          </Button>,
-          <Button
-            key="save"
-            type="primary"
-            onClick={() => {
-              setToken(tokenDraft.trim());
-              setTokenOpen(false);
-              window.location.reload();
-            }}
-          >
-            保存并刷新
-          </Button>,
-        ]}
-      >
-        <p>此服务启用了访问令牌（RECORDER_ACCESS_TOKEN），请输入后继续。</p>
-        <Input.Password
-          value={tokenDraft}
-          onChange={(e) => setTokenDraft(e.target.value)}
-          placeholder="访问令牌"
-        />
-      </Modal>
     </Layout>
   );
 }

@@ -10,13 +10,77 @@ import type {
   Summary,
 } from "./types";
 
-export function getToken(): string {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem("recorder_token") ?? "";
+export function normalizeBaseUrl(raw: string): string {
+  return (raw || "").trim().replace(/\/+$/, "");
 }
 
-export function setToken(token: string) {
-  window.localStorage.setItem("recorder_token", token);
+/* ---------- 连接地址与令牌（模块级，SSR 安全） ---------- */
+
+const CONNECTION_KEY = "recorder_panel.connection";
+const LEGACY_TOKEN_KEY = "recorder_token";
+
+function readStoredToken(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = window.localStorage.getItem(CONNECTION_KEY);
+    if (raw) return (JSON.parse(raw) as { token?: string }).token ?? "";
+  } catch {
+    // ignore
+  }
+  // 迁移旧版令牌键
+  const legacy = window.localStorage.getItem(LEGACY_TOKEN_KEY) ?? "";
+  if (legacy) {
+    window.localStorage.removeItem(LEGACY_TOKEN_KEY);
+  }
+  return legacy;
+}
+
+let apiBase = "";
+let apiToken = "";
+
+if (typeof window !== "undefined") {
+  apiBase = normalizeBaseUrl(readStoredBase());
+  apiToken = readStoredToken();
+}
+
+function readStoredBase(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = window.localStorage.getItem(CONNECTION_KEY);
+    if (raw) return (JSON.parse(raw) as { baseUrl?: string }).baseUrl ?? "";
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+export function getApiBase(): string {
+  return apiBase;
+}
+
+export function getApiToken(): string {
+  return apiToken;
+}
+
+/** 连接成功 / 登出后同步模块级凭据（api 与 WebSocket 共用）。 */
+export function setApiCredentials(baseUrl: string, token: string) {
+  apiBase = normalizeBaseUrl(baseUrl);
+  apiToken = token;
+}
+
+/** 连接校验：GET {base}/api/summary，用显式凭据，不影响模块级状态。 */
+export async function validateConnection(baseUrl: string, token: string): Promise<Summary> {
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let resp: Response;
+  try {
+    resp = await fetch(`${normalizeBaseUrl(baseUrl)}/api/summary`, { headers });
+  } catch (e) {
+    throw new Error(`无法连接到服务端：${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (resp.status === 401) throw new Error("访问令牌缺失或不正确");
+  if (!resp.ok) throw new Error(`请求失败（${resp.status}）`);
+  return resp.json() as Promise<Summary>;
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -24,9 +88,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string>) ?? {}),
   };
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const resp = await fetch(path, { ...init, headers });
+  if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
+  const resp = await fetch(`${apiBase}${path}`, { ...init, headers });
   if (!resp.ok) {
     if (resp.status === 401) {
       window.dispatchEvent(new Event("recorder:unauthorized"));

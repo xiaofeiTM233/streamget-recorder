@@ -80,10 +80,11 @@ uv run python scripts/dev_record_test.py   # 用公开测试流完整跑一遍�
 | `RECORDER_HOST` | `127.0.0.1` | 监听地址；Docker 内已设为 `0.0.0.0` |
 | `RECORDER_PORT` | `8000` | 监听端口 |
 | `RECORDER_DATA_DIR` | `data` | 数据文件 / 录制 / 日志根目录 |
-| `RECORDER_ACCESS_TOKEN` | 空 | 设置后所有 API 需携带令牌（页面会弹出输入框） |
 | `RECORDER_LOG_LEVEL` | `INFO` | 日志级别 |
 
 运行期设置在网页"设置"页修改，存于 settings.json，即时生效。
+访问令牌（`access_token`）也在"设置 → 关于与令牌"中维护：设置后所有 API 与 WebSocket
+均需携带令牌，面板登录界面需填写一致令牌；留空表示不启用鉴权。
 
 ## 目录结构
 

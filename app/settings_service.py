@@ -42,6 +42,7 @@ DEFAULTS: dict[str, object] = {
     "proxy_addr": "",            # 全局代理（检测与解析用；配合 proxy_record_platforms 也用于拉流），空 = 不使用
     "platform_credentials": "[]",  # 平台登录凭证 JSON 数组：[{"platform":"x","cookie":""}]，房间未配 Cookie 时的兜底（streamget 仅支持 Cookie 登录）
     "reconnect_backoff_max": 300,  # 断流/失败重试的最大退避（秒）
+    "access_token": "",          # 访问令牌：非空时 REST 与 WS 均需携带（设置页可改，登录界面需填写一致令牌）
     "file_template": "{platform}/{anchor}/{datetime}_{title}",  # 保存路径模板，占位符：platform/platform_name/anchor/title/remark/room_id/session_id/datetime/date/time/year/month/day/hour/minute/second/quality
 }
 

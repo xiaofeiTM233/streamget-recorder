@@ -5,7 +5,7 @@ import { App as AntApp, ConfigProvider, theme } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
-import { EventProvider } from "@/lib/events";
+import { ConnectionProvider } from "@/lib/connection";
 
 export default function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -38,7 +38,7 @@ export default function Providers({ children }: { children: ReactNode }) {
           }}
         >
           <AntApp>
-            <EventProvider>{children}</EventProvider>
+            <ConnectionProvider>{children}</ConnectionProvider>
           </AntApp>        </ConfigProvider>
       </QueryClientProvider>
     </AntdRegistry>

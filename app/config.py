@@ -17,7 +17,6 @@ class AppConfig(BaseSettings):
     port: int = 8000
     data_dir: Path = Path("data")          # 数据库 / 录制文件 / 日志的根目录
     panel_dir: Path = Path("panel/out")    # 前端静态产物目录
-    access_token: str | None = None        # 可选访问令牌，设置后 REST 与 WS 均需携带
     log_level: str = "INFO"
 
     def resolve_paths(self, base_dir: Path) -> None:

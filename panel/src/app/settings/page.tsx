@@ -19,7 +19,8 @@ import {
 } from "antd";
 import { useEffect, useRef, useState } from "react";
 import type { ColumnsType } from "antd/es/table";
-import { setToken, getToken, usePlatforms, useSettings, useSettingsMutation, useSummary } from "@/lib/api";
+import { usePlatforms, useSettings, useSettingsMutation, useSummary } from "@/lib/api";
+import { applyLocalToken } from "@/lib/connection";
 import { QUALITY_LABELS } from "@/lib/types";
 
 // 平台登录凭证行（存储为 JSON 数组字符串：platform_credentials）
@@ -60,6 +61,7 @@ const TEXT_FIELDS = new Set([
   "retention_days",
   "max_concurrent",
   "max_concurrent_per_platform",
+  "access_token",
 ]);
 
 export default function SettingsPage() {
@@ -69,7 +71,6 @@ export default function SettingsPage() {
   const { data: platforms } = usePlatforms();
   const save = useSettingsMutation();
   const [form] = Form.useForm();
-  const [tokenForm] = Form.useForm();
   const quality = Form.useWatch("quality", form);
   const pendingRef = useRef<Record<string, unknown>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -86,9 +87,8 @@ export default function SettingsPage() {
         proxy_record_platforms: String(proxy_record_platforms ?? "").split(",").filter(Boolean),
       });
       setCreds(parseCreds(data.settings.platform_credentials));
-      tokenForm.setFieldsValue({ token: getToken() });
     }
-  }, [data, form, tokenForm]);
+  }, [data, form]);
 
   // 更新凭证表：同步进表单；选择/删除即时保存（immediate=true），文本输入在失焦时保存
   const updateCreds = (rows: CredRow[], immediate = true) => {
@@ -118,7 +118,13 @@ export default function SettingsPage() {
       payload.proxy_record_platforms = values.proxy_record_platforms.join(",");
     }
     save.mutate(payload, {
-      onSuccess: () => message.success("设置已自动保存"),
+      onSuccess: () => {
+        message.success("设置已自动保存");
+        // 令牌保存成功后同步本地连接凭据，避免下一请求 401 被登出
+        if (typeof values.access_token === "string") {
+          applyLocalToken(values.access_token.trim());
+        }
+      },
       onError: (err) => message.error((err as Error).message),
     });
   };
@@ -493,8 +499,6 @@ export default function SettingsPage() {
             </Card>
           </Col>
         </Row>
-      </Form>
-      </div>
 
       <Row gutter={[16, 16]} style={{ alignItems: "stretch" }}>
         <Col xs={24} xl={12} style={{ display: "flex" }}>
@@ -578,21 +582,18 @@ export default function SettingsPage() {
               <Alert
                 type="info"
                 showIcon
-                message="仅在服务端设置了 RECORDER_ACCESS_TOKEN 时需要。令牌只保存在当前浏览器。"
+                message="令牌保存在服务端 settings.json；设置后所有接口与 WebSocket 均需携带，登录界面需填写一致令牌。留空表示不启用鉴权。"
               />
-              <Form
-                form={tokenForm}
-                layout="vertical"
-                onFinish={(values) => {
-                  setToken(values.token?.trim() ?? "");
-                  message.success("令牌已保存到本地浏览器");
-                }}
+              <Form.Item
+                name="access_token"
+                label="访问令牌"
+                style={{ maxWidth: 480, marginBottom: 12 }}
               >
-                <Form.Item name="token" label="访问令牌" style={{ maxWidth: 480, marginBottom: 12 }}>
-                  <Input.Password placeholder="留空表示不使用" visibilityToggle={false} />
-                </Form.Item>
-                <Button htmlType="submit">保存令牌</Button>
-              </Form>
+                <Input.Password
+                  placeholder="留空表示不启用鉴权"
+                  autoComplete="new-password"
+                />
+              </Form.Item>
               <Typography.Text type="secondary">
                 StreamGet 录播台 v{summary?.version ?? "…"} · 基于 streamget（流地址解析）+ FFmpeg（录制）
               </Typography.Text>
@@ -600,6 +601,8 @@ export default function SettingsPage() {
           </Card>
         </Col>
       </Row>
+      </Form>
+      </div>
     </Space>
   );
 }

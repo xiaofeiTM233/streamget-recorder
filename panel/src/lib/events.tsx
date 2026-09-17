@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getToken } from "./api";
+import { getApiBase, getApiToken } from "./api";
 import type { RecordingProgress, WsEvent } from "./types";
 
 interface EventState {
@@ -22,6 +22,10 @@ const EventContext = createContext<EventState>({ connected: false, progress: {} 
 
 function wsUrl(): string {
   if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  const base = getApiBase();
+  if (base) {
+    return `${base.replace(/^http/, "ws")}/ws`;
+  }
   if (process.env.NODE_ENV === "development") {
     const backend = process.env.NEXT_PUBLIC_BACKEND_URL ?? "ws://127.0.0.1:8000";
     return `${backend}/ws`;
@@ -83,7 +87,7 @@ export function EventProvider({ children }: { children: ReactNode }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const connect = () => {
-      const token = getToken();
+      const token = getApiToken();
       const url = token ? `${wsUrl()}?token=${encodeURIComponent(token)}` : wsUrl();
       ws = new WebSocket(url);
       ws.onopen = () => {
