@@ -18,12 +18,11 @@ from pathlib import Path
 
 import httpx
 from loguru import logger
-from sqlalchemy import select
 
-from ..db import session_factory
-from ..models import RecordingFile, RecordingSession, Room
+from ..models import Room
 from ..platforms import get_platform
 from ..settings_service import SettingsService
+from ..store import store
 from ..utils import sanitize_component, utcnow
 from .events import bus
 from .monitor import CheckResult, MonitorError, RoomMonitor
@@ -272,18 +271,13 @@ class Recorder:
                 self._last_error = f"磁盘剩余空间不足（{free_gb:.1f} GB < {min_free_gb} GB），暂停录制等待空间释放"
                 logger.warning("房间 #{} {}", self.room_id, self._last_error)
                 return None
-        factory = session_factory()
-        async with factory() as s:
-            row = RecordingFile(
-                session_id=self.session_id,
-                room_id=self.room_id,
-                file_path=rel_path.as_posix(),
-                start_time=utcnow(),
-                status="recording",
-            )
-            s.add(row)
-            await s.commit()
-            file_id = row.id
+        file_row = await store.create_file(
+            session_id=self.session_id,
+            room_id=self.room_id,
+            file_path=rel_path.as_posix(),
+            status="recording",
+        )
+        file_id = file_row.id
         return out_path, rel_path, file_id
 
     async def _segment_epilogue(self, file_id: int, out_path: Path, rel_path: Path,
@@ -506,13 +500,7 @@ class Recorder:
                 mp4_path.unlink()
             return None
         rel = mp4_path.relative_to(self._settings.record_root())
-        factory = session_factory()
-        async with factory() as s:
-            row = await s.get(RecordingFile, file_id)
-            if row is not None:
-                row.file_path = rel.as_posix()
-                row.size = self._file_size(mp4_path)
-                await s.commit()
+        await store.update_file(file_id, file_path=rel.as_posix(), size=self._file_size(mp4_path))
         if bool(self._get("delete_original_after_convert")):
             with contextlib.suppress(OSError):
                 out_path.unlink()
@@ -744,20 +732,15 @@ class Recorder:
     # ---------- DB 状态与事件 ----------
 
     async def _open_session(self) -> None:
-        factory = session_factory()
-        async with factory() as s:
-            row = RecordingSession(
-                room_id=self.room_id,
-                platform=self._platform,
-                anchor_name=self._check.anchor_name,
-                title=self._check.title,
-                quality=self._room_quality or str(self._settings.get("quality")),
-                start_time=utcnow(),
-                status="recording",
-            )
-            s.add(row)
-            await s.commit()
-            self.session_id = row.id
+        row = await store.create_session(
+            room_id=self.room_id,
+            platform=self._platform,
+            anchor_name=self._check.anchor_name,
+            title=self._check.title,
+            quality=self._room_quality or str(self._settings.get("quality")),
+            status="recording",
+        )
+        self.session_id = row.id
         logger.info(
             "房间 #{} 录制会话 #{} 开始：{}（{}）",
             self.room_id, self.session_id, self._check.title, self._check.anchor_name,
@@ -782,30 +765,22 @@ class Recorder:
     async def _close_session(self) -> None:
         if self.session_id is None:
             return
-        factory = session_factory()
-        async with factory() as s:
-            row = await s.get(RecordingSession, self.session_id)
-            if row is not None and row.status == "recording":
-                row.end_time = utcnow()
-                row.status = "finished"
+        session = await store.get_session(self.session_id)
+        if session is not None:
+            if session.status == "recording":
+                await store.update_session(self.session_id, end_time=utcnow(), status="finished")
             # 收尾可能没来得及更新的分段
-            files = (
-                await s.execute(
-                    select(RecordingFile).where(
-                        RecordingFile.session_id == self.session_id,
-                        RecordingFile.status == "recording",
+            for f in session.files:
+                if f.status == "recording":
+                    await store.update_file(
+                        f.id,
+                        status="finished",
+                        end_time=utcnow(),
+                        size=self._file_size(self._settings.record_root() / f.file_path),
                     )
-                )
-            ).scalars().all()
-            for f in files:
-                f.status = "finished"
-                f.end_time = utcnow()
-                f.size = self._file_size(self._settings.record_root() / f.file_path)
-            room = await s.get(Room, self.room_id)
-            if room is not None and room.status == "recording":
-                room.status = "idle"
-                room.status_msg = ""
-            await s.commit()
+        room = await store.get_room(self.room_id)
+        if room is not None and room.status == "recording":
+            await store.update_room(self.room_id, status="idle", status_msg="")
         bus.publish("recording_ended", room_id=self.room_id, session_id=self.session_id)
         self._fire_webhook(
             "recording_ended",
@@ -818,14 +793,7 @@ class Recorder:
         self.progress = {}
 
     async def _set_room(self, status: str, msg: str = "") -> None:
-        factory = session_factory()
-        async with factory() as s:
-            room = await s.get(Room, self.room_id)
-            if room is None:
-                return
-            room.status = status
-            room.status_msg = msg[:250]
-            await s.commit()
+        await store.update_room(self.room_id, status=status, status_msg=msg[:250])
         bus.publish("room_status", room_id=self.room_id, status=status, status_msg=msg[:250])
 
     async def _mark_recording(self) -> None:
@@ -836,16 +804,13 @@ class Recorder:
         await self._set_room("recording", msg)  # 会话仍在，保持 recording 状态并携带错误信息
 
     async def _finalize_file(self, file_id: int, out_path: Path, duration: float, status: str) -> None:
-        factory = session_factory()
-        async with factory() as s:
-            row = await s.get(RecordingFile, file_id)
-            if row is None:
-                return
-            row.size = self._file_size(out_path)
-            row.duration = round(duration, 1)
-            row.end_time = utcnow()
-            row.status = status
-            await s.commit()
+        await store.update_file(
+            file_id,
+            size=self._file_size(out_path),
+            duration=round(duration, 1),
+            end_time=utcnow(),
+            status=status,
+        )
 
     # ---------- 停止 ----------
 

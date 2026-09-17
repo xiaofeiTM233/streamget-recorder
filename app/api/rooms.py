@@ -1,14 +1,13 @@
 """房间管理 API。"""
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
 
 from ..core.events import bus
 from ..core.monitor import MonitorError, check_once
-from ..db import session_factory
 from ..models import Room
 from ..platforms import detect_platform, get_platform
 from ..schemas import BatchRoomToggle, RoomCreate, RoomUpdate, validate_overrides, validate_quality
+from ..store import store
 from ..utils import iso_utc, utcnow
 from .deps import get_state
 
@@ -37,20 +36,16 @@ def room_out(room: Room, manager) -> dict:
 
 
 async def _get_room_or_404(room_id: int) -> Room:
-    factory = session_factory()
-    async with factory() as s:
-        room = await s.get(Room, room_id)
-        if room is None:
-            raise HTTPException(status_code=404, detail="房间不存在")
-        return room
+    room = await store.get_room(room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="房间不存在")
+    return room
 
 
 @router.get("")
 async def list_rooms(request: Request):
     state = get_state(request)
-    factory = session_factory()
-    async with factory() as s:
-        rooms = (await s.execute(select(Room).order_by(Room.id))).scalars().all()
+    rooms = await store.list_rooms()
     return [room_out(r, state.manager) for r in rooms]
 
 
@@ -64,29 +59,19 @@ async def create_room(payload: RoomCreate, request: Request):
     if get_platform(platform) is None:
         raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
 
-    factory = session_factory()
-    async with factory() as s:
-        exists = (
-            (await s.execute(select(Room).where(Room.room_url == payload.room_url.strip())))
-            .scalars()
-            .first()
-        )
-        if exists is not None:
-            raise HTTPException(status_code=400, detail="该房间已存在")
-        room = Room(
-            platform=platform,
-            room_url=payload.room_url.strip(),
-            quality=quality or str(state.settings_svc.get("quality")),
-            check_interval=payload.check_interval,
-            cookie=payload.cookie or "",
-            remark=payload.remark or "",
-            overrides=validate_overrides(payload.overrides),
-            enabled=payload.enabled,
-        )
-        s.add(room)
-        await s.commit()
-        await s.refresh(room)
-        snapshot = room_out(room, state.manager)
+    if await store.get_room_by_url(payload.room_url.strip()) is not None:
+        raise HTTPException(status_code=400, detail="该房间已存在")
+    room = await store.create_room(
+        platform=platform,
+        room_url=payload.room_url.strip(),
+        quality=quality or str(state.settings_svc.get("quality")),
+        check_interval=payload.check_interval,
+        cookie=payload.cookie or "",
+        remark=payload.remark or "",
+        overrides=validate_overrides(payload.overrides),
+        enabled=payload.enabled,
+    )
+    snapshot = room_out(room, state.manager)
     await state.scheduler.reload()
     return snapshot
 
@@ -96,30 +81,30 @@ async def update_room(room_id: int, payload: RoomUpdate, request: Request):
     state = get_state(request)
     # 用"字段是否显式提交"区分 未提供（不修改）与 提交 null（清空，恢复跟随全局）
     provided = payload.model_fields_set
-    factory = session_factory()
-    async with factory() as s:
-        room = await s.get(Room, room_id)
-        if room is None:
-            raise HTTPException(status_code=404, detail="房间不存在")
-        if payload.room_url is not None:
-            room.room_url = payload.room_url.strip()
-        if "quality" in provided:
-            # 显式提交：null/非法清空 = 跟随全局（存储空串，录制时回退全局设置）
-            room.quality = validate_quality(payload.quality) if payload.quality else ""
-        if "check_interval" in provided:
-            room.check_interval = payload.check_interval  # 显式 null = 跟随全局
-        if "overrides" in provided:
-            # 显式提交：null/空 dict = 清空全部覆盖，恢复跟随全局
-            room.overrides = validate_overrides(payload.overrides)
-        if payload.cookie is not None:
-            room.cookie = payload.cookie  # 空串 = 删除 Cookie
-        if "remark" in provided:
-            room.remark = payload.remark or ""
-        if payload.enabled is not None:
-            room.enabled = payload.enabled
-        await s.commit()
-        await s.refresh(room)
-        snapshot = room_out(room, state.manager)
+    room = await store.get_room(room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="房间不存在")
+    fields: dict = {}
+    if payload.room_url is not None:
+        fields["room_url"] = payload.room_url.strip()
+    if "quality" in provided:
+        # 显式提交：null/非法清空 = 跟随全局（存储空串，录制时回退全局设置）
+        fields["quality"] = validate_quality(payload.quality) if payload.quality else ""
+    if "check_interval" in provided:
+        fields["check_interval"] = payload.check_interval  # 显式 null = 跟随全局
+    if "overrides" in provided:
+        # 显式提交：null/空 dict = 清空全部覆盖，恢复跟随全局
+        fields["overrides"] = validate_overrides(payload.overrides)
+    if payload.cookie is not None:
+        fields["cookie"] = payload.cookie  # 空串 = 删除 Cookie
+    if "remark" in provided:
+        fields["remark"] = payload.remark or ""
+    if payload.enabled is not None:
+        fields["enabled"] = payload.enabled
+    room = await store.update_room(room_id, **fields)
+    if room is None:
+        raise HTTPException(status_code=404, detail="房间不存在")
+    snapshot = room_out(room, state.manager)
     await state.scheduler.reload()
     if payload.enabled is False:
         await state.manager.stop(room_id, reason="房间已停用")
@@ -134,13 +119,8 @@ async def delete_room(room_id: int, request: Request):
         # 先优雅停掉录制（≤10s），避免删除后录制任务继续写库
         await recorder.stop("房间已删除")
         await recorder.wait()
-    factory = session_factory()
-    async with factory() as s:
-        room = await s.get(Room, room_id)
-        if room is None:
-            raise HTTPException(status_code=404, detail="房间不存在")
-        await s.delete(room)
-        await s.commit()
+    if not await store.delete_room(room_id):
+        raise HTTPException(status_code=404, detail="房间不存在")
     await state.scheduler.reload()
     return {"deleted": True}
 
@@ -148,13 +128,7 @@ async def delete_room(room_id: int, request: Request):
 @router.post("/batch-toggle")
 async def batch_toggle(payload: BatchRoomToggle, request: Request):
     state = get_state(request)
-    factory = session_factory()
-    async with factory() as s:
-        rooms = ((await s.execute(select(Room).where(Room.id.in_(payload.ids)))).scalars().all())
-        for room in rooms:
-            room.enabled = payload.enabled
-        await s.commit()
-        updated = len(rooms)
+    updated = await store.update_rooms(payload.ids, enabled=payload.enabled)
     if not payload.enabled:
         for room_id in payload.ids:
             await state.manager.stop(room_id, reason="房间已停用")
@@ -183,39 +157,29 @@ async def check_room_now(room_id: int, request: Request):
         check = await check_once(room.platform, room.room_url, room.cookie or None, proxy)
     except MonitorError as exc:
         # 手动检测失败：与轮询路径一致，标记错误状态供页面展示
-        factory = session_factory()
-        async with factory() as s:
-            db_room = await s.get(Room, room_id)
-            if db_room is not None:
-                db_room.status = "error"
-                db_room.status_msg = f"检测失败：{exc}"[:250]
-                await s.commit()
+        await store.update_room(room_id, status="error", status_msg=f"检测失败：{exc}"[:250])
         bus.publish("room_status", room_id=room_id, status="error", status_msg=f"检测失败：{exc}"[:250])
         raise HTTPException(status_code=502, detail=f"检测失败：{exc}")
-    factory = session_factory()
-    async with factory() as s:
-        db_room = await s.get(Room, room_id)
-        if db_room is not None:
-            if check.anchor_name and check.anchor_name != db_room.anchor_name:
-                db_room.anchor_name = check.anchor_name
-            db_room.last_check_at = utcnow()
-            # 检测成功：清除旧的错误状态（未开播回 idle；开播后由录制器标记 recording）
-            db_room.status = "idle"
-            db_room.status_msg = ""
-            await s.commit()
+    db_room = await store.get_room(room_id)
+    if db_room is not None:
+        fields: dict = {"last_check_at": utcnow()}
+        if check.anchor_name and check.anchor_name != db_room.anchor_name:
+            fields["anchor_name"] = check.anchor_name
+        # 检测成功：清除旧的错误状态（未开播回 idle；开播后由录制器标记 recording）
+        fields["status"] = "idle"
+        fields["status_msg"] = ""
+        await store.update_room(room_id, **fields)
     bus.publish("room_status", room_id=room_id, status="idle", status_msg="", is_live=check.is_live)
     started = False
     if check.is_live and room.enabled:
         recorder = await state.manager.start(room, check)
         started = recorder is not None  # 并发上限已满时为 False，调度器稍后会自动重试
         if not started:
-            factory = session_factory()
-            async with factory() as s:
-                db_room = await s.get(Room, room_id)
-                if db_room is not None:
-                    db_room.status = "error"
-                    db_room.status_msg = "并发录制数已达上限，等待空位后自动重试"
-                    await s.commit()
+            await store.update_room(
+                room_id,
+                status="error",
+                status_msg="并发录制数已达上限，等待空位后自动重试",
+            )
             bus.publish(
                 "room_status",
                 room_id=room_id,

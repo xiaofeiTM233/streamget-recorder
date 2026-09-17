@@ -7,10 +7,9 @@ dependencies = [
     "streamget>=4.0.10",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "sqlalchemy[asyncio]>=2.0.30",
-    "aiosqlite>=0.20",
     "pydantic-settings>=2.3",
     "loguru>=0.7",
+    "send2trash>=1.8",
 ]
 
 [tool.uv]

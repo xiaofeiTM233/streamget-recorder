@@ -9,11 +9,10 @@ import asyncio
 import random
 
 from loguru import logger
-from sqlalchemy import select
 
-from ..db import session_factory
 from ..models import Room
 from ..settings_service import SettingsService
+from ..store import store
 from ..utils import utcnow
 from .events import bus
 from .manager import RecorderManager
@@ -31,10 +30,8 @@ class PollingScheduler:
     # ---------- 任务集管理 ----------
 
     async def reload(self) -> None:
-        """让任务集与数据库中启用房间保持一致（房间增删改后调用）。"""
-        factory = session_factory()
-        async with factory() as s:
-            rooms = (await s.execute(select(Room))).scalars().all()
+        """让任务集与存储中启用房间保持一致（房间增删改后调用）。"""
+        rooms = await store.list_rooms()
         wanted = {r.id for r in rooms if r.enabled}
         for room_id in [rid for rid in self._tasks if rid not in wanted]:
             self._cancel_task(room_id)
@@ -108,9 +105,7 @@ class PollingScheduler:
         logger.info("房间 #{} 停止监控", room_id)
 
     async def _get_room(self, room_id: int) -> Room | None:
-        factory = session_factory()
-        async with factory() as s:
-            return await s.get(Room, room_id)
+        return await store.get_room(room_id)
 
     @staticmethod
     async def _sleep(wake: asyncio.Event, seconds: float) -> None:
@@ -122,35 +117,26 @@ class PollingScheduler:
 
     async def _update_after_check(self, room_id: int, check) -> None:
         """回填主播名/检测时间；未开播则状态置 idle。"""
-        factory = session_factory()
-        async with factory() as s:
-            room = await s.get(Room, room_id)
-            if room is None:
-                return
-            if check.anchor_name and check.anchor_name != room.anchor_name:
-                room.anchor_name = check.anchor_name
-            room.last_check_at = utcnow()
-            if not check.is_live:
-                room.status = "idle"
-                room.status_msg = ""
-            await s.commit()
+        room = await store.get_room(room_id)
+        if room is None:
+            return
+        fields: dict = {"last_check_at": utcnow()}
+        if check.anchor_name and check.anchor_name != room.anchor_name:
+            fields["anchor_name"] = check.anchor_name
+        if not check.is_live:
+            fields["status"] = "idle"
+            fields["status_msg"] = ""
+        await store.update_room(room_id, **fields)
         bus.publish(
             "room_status",
             room_id=room_id,
-            status=room.status,
-            status_msg=room.status_msg,
+            status=fields.get("status", room.status),
+            status_msg=fields.get("status_msg", room.status_msg),
             is_live=check.is_live,
             anchor_name=check.anchor_name,
             title=check.title,
         )
 
     async def _set_room_status(self, room_id: int, status: str, msg: str) -> None:
-        factory = session_factory()
-        async with factory() as s:
-            room = await s.get(Room, room_id)
-            if room is None:
-                return
-            room.status = status
-            room.status_msg = msg[:250]
-            await s.commit()
+        await store.update_room(room_id, status=status, status_msg=msg[:250])
         bus.publish("room_status", room_id=room_id, status=status, status_msg=msg[:250])

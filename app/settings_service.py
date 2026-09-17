@@ -16,7 +16,7 @@ DEFAULTS: dict[str, object] = {
     "check_interval": 60,        # 循环时间（秒）：开播检测间隔
     "end_confirm_delay": 30,     # 下播确认延迟（秒）：检测到下播后等待再次确认，防瞬时断流误收场，0 = 立即结束
     "max_consecutive_failures": 10,  # 连续检测/录制失败上限：达到后结束本次会话交还轮询
-    "retention_days": 0,         # 录制文件保留天数：超期自动清理（文件+记录，每小时检查一次），0 = 永久保留
+    "retention_days": 0,         # 录制文件保留天数：超期按磁盘文件时间自动清理（每小时检查一次），0 = 永久保留
     "webhook_url": "",           # 事件通知地址（POST JSON）：录制会话开始/结束时回调，留空不启用
     "quality": "OD",             # 录制清晰度：OD | UHD | HD | SD | LD | audio（仅音频）
     "output_format": "mp4",      # 录制格式（容器）：mp4 | flv

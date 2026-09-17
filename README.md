@@ -2,7 +2,7 @@
 
 基于 [streamget](https://github.com/ihmily/streamget) + FFmpeg 的多平台直播录播面板，前后端分离：
 
-- **后端**（本目录）：Python / FastAPI / SQLite，负责开播轮询、流地址解析、FFmpeg 录制、实时推送
+- **后端**（本目录）：Python / FastAPI / JSON 文件存储，负责开播轮询、流地址解析、FFmpeg 录制、实时推送
 - **前端**（[panel/](panel/)）：Next.js（静态导出）+ Ant Design，由后端同进程托管，无需 Node 运行时
 
 支持 streamget 全部 50+ 平台（抖音 / B站 / 虎牙 / 斗鱼 / 快手 / TikTok / Twitch / YouTube 等），另内置 `custom` 平台可直接录制 m3u8 / flv 直链。
@@ -17,7 +17,7 @@ FastAPI 单进程
    ├─ RecorderManager → Recorder（每路录制）
    │     └─ FFmpeg 子进程（-c copy 不转码，'q' 优雅收尾）
    ├─ 事件总线 → WebSocket 实时推送状态/进度/日志
-   └─ SQLite（SQLAlchemy 2.0 async, WAL）房间/录制记录 + JSON 文件（settings.json）运行时设置
+   └─ JSON 文件存储：store.json（仅房间）+ settings.json（运行时设置）；录制文件直接读磁盘，不落记录
 streamget 解析流地址 │ FFmpeg 录制 │ Node.js（部分平台签名）
 ```
 
@@ -79,11 +79,11 @@ uv run python scripts/dev_record_test.py   # 用公开测试流完整跑一遍�
 |---|---|---|
 | `RECORDER_HOST` | `127.0.0.1` | 监听地址；Docker 内已设为 `0.0.0.0` |
 | `RECORDER_PORT` | `8000` | 监听端口 |
-| `RECORDER_DATA_DIR` | `data` | 数据库 / 录制 / 日志根目录 |
+| `RECORDER_DATA_DIR` | `data` | 数据文件 / 录制 / 日志根目录 |
 | `RECORDER_ACCESS_TOKEN` | 空 | 设置后所有 API 需携带令牌（页面会弹出输入框） |
 | `RECORDER_LOG_LEVEL` | `INFO` | 日志级别 |
 
-运行期设置在网页"设置"页修改，存于数据库，即时生效。
+运行期设置在网页"设置"页修改，存于 settings.json，即时生效。
 
 ## 目录结构
 
@@ -92,7 +92,7 @@ recorder/
 ├── main.py               # FastAPI 入口：生命周期 + 路由 + panel 静态托管
 ├── app/
 │   ├── config.py         # 启动配置（环境变量）
-│   ├── db.py / models.py # SQLite + ORM（rooms / recording_sessions / recording_files）
+│   ├── store.py / models.py # JSON 存储（data/store.json 仅存房间）；会话/分段仅内存跟踪
 │   ├── settings_service.py # 运行时设置（data/settings.json）
 │   ├── platforms.py      # 平台注册表 + URL 自动识别 + custom 直链平台
 │   └── api/              # rooms / recordings / settings / system / ws
@@ -105,7 +105,7 @@ recorder/
 ├── panel/                # Next.js 前端（npx create-next-app 生成，静态导出）
 ├── scripts/dev_record_test.py
 ├── Dockerfile / docker-compose.yml / start.bat
-└── data/                 # 运行时数据（git 忽略）：数据库、录制文件、日志
+└── data/                 # 运行时数据（git 忽略）：JSON 数据文件、录制文件、日志
 ```
 
 ## 已知边界（v2 预留）

@@ -1,81 +1,106 @@
-"""ORM 模型：房间、录制会话、分段文件（运行时设置存 data/settings.json）。"""
+"""数据模型：房间（持久化到 store.json）、录制会话/分段文件（仅内存跟踪）。"""
 
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from .utils import utcnow
+def _iso_to_dt(value: object) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
 
 
-class Base(DeclarativeBase):
-    pass
-
-
-class Room(Base):
-    __tablename__ = "rooms"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    platform: Mapped[str] = mapped_column(String(32), index=True)
-    room_url: Mapped[str] = mapped_column(String(512))
-    anchor_name: Mapped[str] = mapped_column(String(128), default="")
-    remark: Mapped[str] = mapped_column(String(255), default="")
-    quality: Mapped[str] = mapped_column(String(8), default="OD")
-    check_interval: Mapped[int | None] = mapped_column(Integer, default=None)  # None=用全局
-    cookie: Mapped[str] = mapped_column(Text, default="")
-    # 房间级设置覆盖（JSON dict），键见 schemas.OVERRIDE_KEYS；空 dict = 全部跟随全局
-    overrides: Mapped[dict] = mapped_column(JSON, default=dict)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+@dataclass
+class Room:
+    id: int = 0
+    platform: str = ""
+    room_url: str = ""
+    anchor_name: str = ""
+    remark: str = ""
+    quality: str = "OD"
+    check_interval: int | None = None  # None=用全局
+    cookie: str = ""
+    # 房间级设置覆盖（dict），键见 schemas.OVERRIDE_KEYS；空 dict = 全部跟随全局
+    overrides: dict = field(default_factory=dict)
+    enabled: bool = True
     # idle=监控中未开播 | recording=录制中 | error=异常 | disabled=已停用
-    status: Mapped[str] = mapped_column(String(16), default="idle")
-    status_msg: Mapped[str] = mapped_column(String(255), default="")
-    last_check_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    status: str = "idle"
+    status_msg: str = ""
+    last_check_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
-    sessions: Mapped[list["RecordingSession"]] = relationship(
-        back_populates="room", cascade="all, delete-orphan", passive_deletes=True
-    )
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "platform": self.platform,
+            "room_url": self.room_url,
+            "anchor_name": self.anchor_name,
+            "remark": self.remark,
+            "quality": self.quality,
+            "check_interval": self.check_interval,
+            "cookie": self.cookie,
+            "overrides": self.overrides,
+            "enabled": self.enabled,
+            "status": self.status,
+            "status_msg": self.status_msg,
+            "last_check_at": self.last_check_at.isoformat() if self.last_check_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Room":
+        return cls(
+            id=int(data.get("id") or 0),
+            platform=str(data.get("platform") or ""),
+            room_url=str(data.get("room_url") or ""),
+            anchor_name=str(data.get("anchor_name") or ""),
+            remark=str(data.get("remark") or ""),
+            quality=str(data.get("quality") or "OD"),
+            check_interval=data.get("check_interval"),
+            cookie=str(data.get("cookie") or ""),
+            overrides=dict(data.get("overrides") or {}),
+            enabled=bool(data.get("enabled", True)),
+            status=str(data.get("status") or "idle"),
+            status_msg=str(data.get("status_msg") or ""),
+            last_check_at=_iso_to_dt(data.get("last_check_at")),
+            created_at=_iso_to_dt(data.get("created_at")),
+            updated_at=_iso_to_dt(data.get("updated_at")),
+        )
 
 
-class RecordingSession(Base):
-    """一次连续的录制会话（可能因断流分成多个文件）。"""
+@dataclass
+class RecordingFile:
+    """一个分段文件（仅内存跟踪，用于录制流程与录制状态判断）。"""
 
-    __tablename__ = "recording_sessions"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    room_id: Mapped[int] = mapped_column(
-        ForeignKey("rooms.id", ondelete="CASCADE"), index=True
-    )
-    platform: Mapped[str] = mapped_column(String(32))
-    anchor_name: Mapped[str] = mapped_column(String(128), default="")
-    title: Mapped[str] = mapped_column(String(255), default="")
-    quality: Mapped[str] = mapped_column(String(8), default="")
-    start_time: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    end_time: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    status: Mapped[str] = mapped_column(String(16), default="recording")  # recording|finished|error
-
-    room: Mapped[Room] = relationship(back_populates="sessions")
-    files: Mapped[list["RecordingFile"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
-    )
+    id: int = 0
+    session_id: int = 0
+    room_id: int = 0
+    file_path: str = ""  # 相对录制根目录
+    size: int = 0
+    duration: float = 0.0  # 秒
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    status: str = "recording"  # recording|finished|error
 
 
-class RecordingFile(Base):
-    __tablename__ = "recording_files"
+@dataclass
+class RecordingSession:
+    """一次连续的录制会话（可能因断流分成多个文件），仅内存跟踪。"""
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[int] = mapped_column(
-        ForeignKey("recording_sessions.id", ondelete="CASCADE"), index=True
-    )
-    room_id: Mapped[int] = mapped_column(
-        ForeignKey("rooms.id", ondelete="CASCADE"), index=True
-    )
-    file_path: Mapped[str] = mapped_column(String(1024))  # 相对录制根目录
-    size: Mapped[int] = mapped_column(BigInteger, default=0)
-    duration: Mapped[float] = mapped_column(Float, default=0.0)  # 秒
-    start_time: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    end_time: Mapped[datetime | None] = mapped_column(DateTime, default=None)
-    status: Mapped[str] = mapped_column(String(16), default="recording")  # recording|finished|error
-
-    session: Mapped["RecordingSession"] = relationship(back_populates="files")
+    id: int = 0
+    room_id: int = 0
+    platform: str = ""
+    anchor_name: str = ""
+    title: str = ""
+    quality: str = ""
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    status: str = "recording"  # recording|finished|error
+    files: list[RecordingFile] = field(default_factory=list)

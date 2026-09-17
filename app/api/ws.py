@@ -9,8 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..config import config
 from ..core.events import bus
-from ..db import session_factory
-from ..models import Room
+from ..store import store
 from .rooms import room_out
 
 router = APIRouter()
@@ -36,12 +35,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def _build_snapshot(websocket: WebSocket) -> dict:
-    from sqlalchemy import select
-
     state = websocket.app.state
-    factory = session_factory()
-    async with factory() as s:
-        rooms = (await s.execute(select(Room).order_by(Room.id))).scalars().all()
+    rooms = await store.list_rooms()
     return {
         "rooms": [room_out(r, state.manager) for r in rooms],
         "progress": state.manager.progress_snapshot(),

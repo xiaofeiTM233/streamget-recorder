@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -18,52 +19,16 @@ from app.config import config
 from app.core.events import bus
 from app.core.manager import RecorderManager
 from app.core.scheduler import PollingScheduler
-from app.db import dispose_db, init_db, session_factory
 from app.log import log_buffer, setup_logging
-from app.models import RecordingFile, RecordingSession, Room
 from app.settings_service import SettingsService
-from app.utils import utcnow
+from app.store import store
 
 BASE_DIR = Path(__file__).resolve().parent
 
 
-async def recover_interrupted() -> None:
-    """状态恢复：清理上次运行遗留的"僵尸录制"状态，保证无人值守可靠性。"""
-    from sqlalchemy import select
-
-    factory = session_factory()
-    async with factory() as s:
-        rows = (await s.execute(
-            select(RecordingSession).where(RecordingSession.status == "recording")
-        )).scalars().all()
-        for row in rows:
-            row.status = "error"
-            row.end_time = utcnow()
-        file_rows = (await s.execute(
-            select(RecordingFile).where(RecordingFile.status == "recording")
-        )).scalars().all()
-        for row in file_rows:
-            row.status = "error"
-            row.end_time = utcnow()
-        room_rows = (await s.execute(
-            select(Room).where(Room.status.in_(("recording", "error")))
-        )).scalars().all()
-        for room in room_rows:
-            room.status = "idle"
-            room.status_msg = "服务重启，已恢复监控"
-        await s.commit()
-        if rows or file_rows or room_rows:
-            logger.info(
-                "状态恢复完成：清理 {} 个会话、{} 个分段、{} 个房间状态",
-                len(rows), len(file_rows), len(room_rows),
-            )
-
-
 async def retention_cleanup_loop(settings_svc: SettingsService) -> None:
-    """按设置的保留天数定期清理过期录制文件（含数据库记录），0 = 永久保留。"""
-    from datetime import timedelta
-
-    from sqlalchemy import delete, exists, select
+    """按设置的保留天数定期清理过期录制文件（按磁盘 mtime，0 = 永久保留），并清空目录。"""
+    import os
 
     while True:
         await asyncio.sleep(3600)  # 每小时检查一次
@@ -71,35 +36,28 @@ async def retention_cleanup_loop(settings_svc: SettingsService) -> None:
             days = int(settings_svc.get("retention_days") or 0)
             if days <= 0:
                 continue
-            cutoff = utcnow() - timedelta(days=days)
             root = settings_svc.record_root()
+            if not root.is_dir():
+                continue
+            cutoff = time.time() - days * 86400
             removed = 0
-            factory = session_factory()
-            async with factory() as s:
-                rows = (await s.execute(
-                    select(RecordingFile).where(
-                        RecordingFile.end_time < cutoff,
-                        RecordingFile.status != "recording",  # 正在录制的文件不清理
-                    )
-                )).scalars().all()
-                for f in rows:
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for name in filenames:
+                    full = os.path.join(dirpath, name)
                     try:
-                        (root / f.file_path).unlink(missing_ok=True)
+                        if os.stat(full).st_mtime < cutoff:
+                            os.unlink(full)
+                            removed += 1
                     except OSError as exc:
-                        logger.warning("清理录制文件失败 {}: {}", f.file_path, exc)
-                    await s.delete(f)
-                    removed += 1
-                # 顺带清理超期且已无分段的空会话记录
-                await s.execute(
-                    delete(RecordingSession).where(
-                        RecordingSession.end_time < cutoff,
-                        RecordingSession.status != "recording",
-                        ~exists(select(RecordingFile.session_id).where(
-                            RecordingFile.session_id == RecordingSession.id
-                        )),
-                    )
-                )
-                await s.commit()
+                        logger.warning("清理录制文件失败 {}: {}", full, exc)
+            # 自底向上清掉空目录（保留根目录本身）
+            for dirpath, dirnames, _filenames in os.walk(root, topdown=False):
+                if dirpath == str(root):
+                    continue
+                for name in dirnames:
+                    empty_dir = os.path.join(dirpath, name)
+                    with suppress(OSError):
+                        os.rmdir(empty_dir)  # 仅成功当目录为空
             if removed:
                 logger.info("已按保留期（{} 天）清理 {} 个录制文件", days, removed)
         except asyncio.CancelledError:
@@ -112,7 +70,7 @@ async def retention_cleanup_loop(settings_svc: SettingsService) -> None:
 async def lifespan(app: FastAPI):
     config.resolve_paths(BASE_DIR)
     setup_logging()
-    await init_db()
+    await store.load()
 
     # Windows Proactor 循环在对端强断连接（RST）时会在连接关闭回调里抛
     # ConnectionResetError(10054)，属已知无害噪音；降为 debug 日志，其余照常处理
@@ -133,7 +91,9 @@ async def lifespan(app: FastAPI):
     manager = RecorderManager(settings_svc)
     scheduler = PollingScheduler(manager, settings_svc)
 
-    await recover_interrupted()
+    n_rooms = await store.recover_rooms()
+    if n_rooms:
+        logger.info("状态恢复完成：清理 {} 个房间状态", n_rooms)
     await scheduler.reload()
 
     app.state.settings_svc = settings_svc
@@ -153,7 +113,6 @@ async def lifespan(app: FastAPI):
     log_buffer.attach(lambda line: None)
     await scheduler.stop()
     await manager.stop_all()
-    await dispose_db()
     logger.info("服务已退出")
 
 

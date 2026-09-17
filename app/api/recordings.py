@@ -1,208 +1,160 @@
-"""录制记录 API：会话/分段文件查询、删除、下载。"""
+"""录制文件 API：把录制目录当普通文件夹提供浏览/搜索/删除/下载。
 
-from datetime import datetime, timedelta
+录制记录不落库：文件列表即磁盘目录内容。
+"""
+
+import os
+import shutil
+from contextlib import suppress
+from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import selectinload
+from loguru import logger
+from send2trash import send2trash
 
-from ..db import session_factory
-from ..models import RecordingFile, RecordingSession
-from ..platforms import get_platform
+from ..store import store
 from ..utils import iso_utc
 from .deps import get_state
 
 router = APIRouter()
 
 
-def _file_out(f: RecordingFile) -> dict:
+def _safe_rel_path(path: str) -> str:
+    """校验并规范化相对路径（拒绝 .. / 绝对路径 / 空路径）。"""
+    parts = [p for p in path.replace("\\", "/").split("/") if p and p not in (".", "..")]
+    if not parts:
+        raise HTTPException(status_code=400, detail="路径不能为空")
+    return "/".join(parts)
+
+
+def _resolve_full(request_root, rel: str):
+    full = (request_root / rel).resolve()
+    if request_root.resolve() not in full.parents and full != request_root.resolve():
+        raise HTTPException(status_code=400, detail="路径越界")
+    return full
+
+
+def _file_entry(rel: str, size: int, mtime: float) -> dict:
+    dt = datetime.fromtimestamp(mtime, tz=timezone.utc).replace(tzinfo=None, microsecond=0)
     return {
-        "id": f.id,
-        "session_id": f.session_id,
-        "file_path": f.file_path,
-        "filename": f.file_path.rsplit("/", 1)[-1],
-        "size": f.size,
-        "duration": f.duration,
-        "start_time": iso_utc(f.start_time),
-        "end_time": iso_utc(f.end_time),
-        "status": f.status,
-        "download_url": f"/api/recordings/files/{f.id}/download",
+        "file_path": rel,
+        "filename": rel.rsplit("/", 1)[-1],
+        "size": size,
+        "modified_time": iso_utc(dt),
+        "download_url": f"/api/recordings/files/download?path={quote(rel)}",
     }
 
 
-def _browse_file(f: RecordingFile, sess: RecordingSession) -> dict:
-    """浏览模式的文件条目（带主播/标题，便于跨目录搜索展示）。"""
-    out = _file_out(f)
-    out["anchor_name"] = sess.anchor_name or ""
-    out["title"] = sess.title or ""
-    return out
-
-
-def _session_out(s: RecordingSession) -> dict:
-    info = get_platform(s.platform)
-    return {
-        "id": s.id,
-        "room_id": s.room_id,
-        "platform": s.platform,
-        "platform_name": info.name if info else s.platform,
-        "anchor_name": s.anchor_name,
-        "title": s.title,
-        "quality": s.quality,
-        "start_time": iso_utc(s.start_time),
-        "end_time": iso_utc(s.end_time),
-        "status": s.status,
-        "total_size": sum(f.size for f in s.files),
-        "total_duration": round(sum(f.duration for f in s.files), 1),
-        "files": [_file_out(f) for f in s.files],
-    }
-
-
-@router.get("")
-async def list_recordings(
-    request: Request,
-    room_id: int | None = None,
-    anchor: str | None = None,
-    start_date: str | None = Query(None, description="YYYY-MM-DD（含）"),
-    end_date: str | None = Query(None, description="YYYY-MM-DD（含）"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-):
-    factory = session_factory()
-    async with factory() as s:
-        stmt = (
-            select(RecordingSession)
-            .options(selectinload(RecordingSession.files))
-            .order_by(RecordingSession.start_time.desc())
-        )
-        count_stmt = select(func.count()).select_from(RecordingSession)
-        if room_id is not None:
-            stmt = stmt.where(RecordingSession.room_id == room_id)
-            count_stmt = count_stmt.where(RecordingSession.room_id == room_id)
-        if anchor:
-            like = f"%{anchor}%"
-            stmt = stmt.where(RecordingSession.anchor_name.like(like))
-            count_stmt = count_stmt.where(RecordingSession.anchor_name.like(like))
-        try:
-            if start_date:
-                dt = datetime.fromisoformat(start_date)
-                stmt = stmt.where(RecordingSession.start_time >= dt)
-                count_stmt = count_stmt.where(RecordingSession.start_time >= dt)
-            if end_date:
-                dt_end = datetime.fromisoformat(end_date) + timedelta(days=1)
-                stmt = stmt.where(RecordingSession.start_time < dt_end)
-                count_stmt = count_stmt.where(RecordingSession.start_time < dt_end)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD")
-
-        total = (await s.execute(count_stmt)).scalar() or 0
-        rows = (
-            (await s.execute(stmt.offset((page - 1) * page_size).limit(page_size)))
-            .scalars()
-            .unique()
-            .all()
-        )
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [_session_out(r) for r in rows],
-    }
+def _walk_files(root):
+    """遍历录制根目录，产出 (rel_path, size, mtime)。"""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            rel = os.path.relpath(full, root).replace("\\", "/")
+            yield rel, st.st_size, st.st_mtime
 
 
 @router.get("/browse")
 async def browse_recordings(
     request: Request,
     path: str = Query("", description="文件夹路径（相对录制根目录，/ 分隔）"),
-    search: str = Query("", description="按文件名/主播/标题跨目录搜索"),
+    search: str = Query("", description="按文件/文件夹名跨目录搜索"),
 ):
     """资源管理器式浏览：返回当前层级的子文件夹（含文件数/总大小）与文件。"""
-    parts = [p for p in path.replace("\\", "/").split("/") if p and p not in (".", "..")]
-    norm = "/".join(parts)
-    prefix = norm + "/" if norm else ""
-    factory = session_factory()
-    async with factory() as s:
-        if search.strip():
-            like = f"%{search.strip()}%"
-            rows = (
-                await s.execute(
-                    select(RecordingFile, RecordingSession)
-                    .join(RecordingSession, RecordingFile.session_id == RecordingSession.id)
-                    .where(
-                        or_(
-                            RecordingFile.file_path.like(like),
-                            RecordingSession.anchor_name.like(like),
-                            RecordingSession.title.like(like),
-                        )
-                    )
-                    .order_by(RecordingFile.start_time.desc())
-                    .limit(500)
-                )
-            ).all()
-            return {
-                "path": "",
-                "search": search.strip(),
-                "folders": [],
-                "files": [_browse_file(f, sess) for f, sess in rows],
-            }
-        # 路径需转义 LIKE 通配符（文件夹名可能含 % _ 等字符）
-        escaped = norm.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") if norm else ""
-        pattern = escaped + "/%" if escaped else "%"
-        rows = (
-            await s.execute(
-                select(RecordingFile, RecordingSession)
-                .join(RecordingSession, RecordingFile.session_id == RecordingSession.id)
-                .where(RecordingFile.file_path.like(pattern, escape="\\"))
-                .order_by(RecordingFile.file_path)
-            )
-        ).all()
-    folders: dict[str, dict] = {}
+    state = get_state(request)
+    root = state.settings_svc.record_root()
+    if search.strip():
+        key = search.strip().lower()
+        rows = [
+            _file_entry(rel, size, mtime)
+            for rel, size, mtime in _walk_files(root)
+            if key in rel.lower()  # 匹配完整相对路径 = 文件名 + 所在文件夹名
+        ]
+        rows.sort(key=lambda x: x["modified_time"] or "", reverse=True)
+        return {
+            "path": "",
+            "search": search.strip(),
+            "folders": [],
+            "files": rows[:500],
+        }
+
+    rel_dir = _safe_rel_path(path) if path.strip() else ""
+    full_dir = root / rel_dir if rel_dir else root
+    if not full_dir.is_dir():
+        raise HTTPException(status_code=404, detail="文件夹不存在")
+
+    folders: list[dict] = []
     files: list[dict] = []
-    for f, sess in rows:
-        rest = f.file_path[len(prefix):] if prefix else f.file_path
-        if "/" in rest:
-            name = rest.split("/", 1)[0]
-            entry = folders.setdefault(name, {"name": name, "file_count": 0, "size": 0})
-            entry["file_count"] += 1
-            entry["size"] += f.size or 0
-        else:
-            files.append(_browse_file(f, sess))
+    for entry in os.scandir(full_dir):
+        rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+        if entry.is_dir(follow_symlinks=False):
+            file_count = 0
+            size = 0
+            for _sub_rel, sub_size, _mtime in _walk_files(entry.path):
+                file_count += 1
+                size += sub_size
+            folders.append({"name": entry.name, "file_count": file_count, "size": size})
+        elif entry.is_file(follow_symlinks=False):
+            st = entry.stat()
+            files.append(_file_entry(rel.replace("\\", "/"), st.st_size, st.st_mtime))
     return {
-        "path": norm,
+        "path": rel_dir,
         "search": "",
-        "folders": sorted(folders.values(), key=lambda d: d["name"]),
-        "files": sorted(files, key=lambda x: x["start_time"] or "", reverse=True),
+        "folders": sorted(folders, key=lambda d: d["name"]),
+        "files": sorted(files, key=lambda x: x["modified_time"] or "", reverse=True),
     }
 
 
-@router.delete("/files/{file_id}")
-async def delete_recording_file(file_id: int, request: Request, delete_disk: bool = True):
+@router.delete("/files")
+async def delete_recording_entry(
+    request: Request,
+    path: str = Query(..., description="文件或文件夹相对路径（/ 分隔）"),
+):
+    """删除文件或整个文件夹（移动到系统回收站；回收站不可用时退回直接删除）。"""
     state = get_state(request)
-    factory = session_factory()
-    async with factory() as s:
-        row = await s.get(RecordingFile, file_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="文件不存在")
-        path = state.settings_svc.record_root() / row.file_path
-        await s.delete(row)
-        await s.commit()
-    if delete_disk:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    root = state.settings_svc.record_root()
+    rel = _safe_rel_path(path)
+    full = _resolve_full(root, rel)
+    if full.is_file():
+        tracked = await store.get_file_by_path(rel)
+        if tracked is not None and tracked.status == "recording":
+            raise HTTPException(status_code=409, detail="文件正在录制中，无法删除")
+    elif full.is_dir():
+        # 文件夹内包含正在录制的文件时拒绝删除
+        for sub_rel, _size, _mtime in _walk_files(full):
+            tracked = await store.get_file_by_path(sub_rel)
+            if tracked is not None and tracked.status == "recording":
+                raise HTTPException(status_code=409, detail="文件夹内包含正在录制的文件，无法删除")
+    else:
+        raise HTTPException(status_code=404, detail="文件或文件夹不存在")
+    try:
+        send2trash(str(full))
+    except Exception as exc:
+        logger.warning("移动到回收站失败（{}），退回直接删除: {}", exc, full)
+        if full.is_dir():
+            shutil.rmtree(full, ignore_errors=True)
+        else:
+            with suppress(OSError):
+                full.unlink()
+    await store.delete_file_by_path(rel)
     return {"deleted": True}
 
 
-@router.get("/files/{file_id}/download")
-async def download_recording_file(file_id: int, request: Request):
+@router.get("/files/download")
+async def download_recording_file(
+    request: Request,
+    path: str = Query(..., description="文件相对路径（/ 分隔）"),
+):
     state = get_state(request)
-    factory = session_factory()
-    async with factory() as s:
-        row = await s.get(RecordingFile, file_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="文件不存在")
-    path = state.settings_svc.record_root() / row.file_path
-    if not path.is_file():
+    root = state.settings_svc.record_root()
+    rel = _safe_rel_path(path)
+    full = _resolve_full(root, rel)
+    if not full.is_file():
         raise HTTPException(status_code=404, detail="文件已不在磁盘上")
-    return FileResponse(path, filename=path.name)
+    return FileResponse(full, filename=full.name)
