@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BrowseResult,
   PlatformInfo,
-  RecordingList,
   RoomOut,
   RoomPayload,
   SettingsPayload,
@@ -64,29 +63,6 @@ export function useSettings() {
   return useQuery({
     queryKey: ["settings"],
     queryFn: () => api<SettingsPayload>("/api/settings"),
-  });
-}
-
-export interface RecordingFilter {
-  room_id?: number;
-  anchor?: string;
-  start_date?: string;
-  end_date?: string;
-  page?: number;
-  page_size?: number;
-}
-
-export function useRecordings(filter: RecordingFilter) {
-  const qs = new URLSearchParams();
-  if (filter.room_id != null) qs.set("room_id", String(filter.room_id));
-  if (filter.anchor) qs.set("anchor", filter.anchor);
-  if (filter.start_date) qs.set("start_date", filter.start_date);
-  if (filter.end_date) qs.set("end_date", filter.end_date);
-  qs.set("page", String(filter.page ?? 1));
-  qs.set("page_size", String(filter.page_size ?? 20));
-  return useQuery({
-    queryKey: ["recordings", filter],
-    queryFn: () => api<RecordingList>(`/api/recordings?${qs.toString()}`),
   });
 }
 
@@ -152,8 +128,11 @@ export function useRecordingMutations() {
     qc.invalidateQueries({ queryKey: ["summary"] });
   };
   const deleteFile = useMutation({
-    mutationFn: ({ id, deleteDisk }: { id: number; deleteDisk: boolean }) =>
-      api(`/api/recordings/files/${id}?delete_disk=${deleteDisk}`, { method: "DELETE" }),
+    mutationFn: ({ path }: { path: string }) => {
+      const qs = new URLSearchParams();
+      qs.set("path", path);
+      return api(`/api/recordings/files?${qs.toString()}`, { method: "DELETE" });
+    },
     onSuccess: invalidate,
   });
   return { deleteFile };

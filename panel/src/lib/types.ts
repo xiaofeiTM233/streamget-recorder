@@ -65,42 +65,6 @@ export interface PlatformInfo {
   deprecated: boolean;
 }
 
-export interface SessionFile {
-  id: number;
-  session_id: number;
-  file_path: string;
-  filename: string;
-  size: number;
-  duration: number;
-  start_time: string | null;
-  end_time: string | null;
-  status: string;
-  download_url: string;
-}
-
-export interface RecordingSession {
-  id: number;
-  room_id: number;
-  platform: string;
-  platform_name: string;
-  anchor_name: string;
-  title: string;
-  quality: string;
-  start_time: string | null;
-  end_time: string | null;
-  status: string;
-  total_size: number;
-  total_duration: number;
-  files: SessionFile[];
-}
-
-export interface RecordingList {
-  total: number;
-  page: number;
-  page_size: number;
-  items: RecordingSession[];
-}
-
 export interface Summary {
   rooms_total: number;
   rooms_enabled: number;
@@ -112,15 +76,10 @@ export interface Summary {
 }
 
 export interface BrowseFile {
-  id: number;
   file_path: string;
   filename: string;
   size: number;
-  duration: number;
-  start_time: string | null;
-  status: string;
-  anchor_name: string;
-  title: string;
+  modified_time: string | null;
   download_url: string;
 }
 
