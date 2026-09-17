@@ -14,11 +14,32 @@ import {
   Select,
   Space,
   Switch,
+  Table,
   Typography,
 } from "antd";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ColumnsType } from "antd/es/table";
 import { setToken, getToken, usePlatforms, useSettings, useSettingsMutation, useSummary } from "@/lib/api";
 import { QUALITY_LABELS } from "@/lib/types";
+
+// 平台登录凭证行（存储为 JSON 数组字符串：platform_credentials）
+interface CredRow {
+  platform: string;
+  cookie: string;
+}
+
+function parseCreds(raw: unknown): CredRow[] {
+  try {
+    const arr = JSON.parse(String(raw ?? "[]"));
+    if (!Array.isArray(arr)) return [];
+    return arr.map((r) => ({
+      platform: String(r?.platform ?? ""),
+      cookie: String(r?.cookie ?? ""),
+    }));
+  } catch {
+    return [];
+  }
+}
 
 // 文本输入类字段：防抖后再保存，避免逐键提交；其余控件即时保存
 const TEXT_FIELDS = new Set([
@@ -42,6 +63,7 @@ export default function SettingsPage() {
   const quality = Form.useWatch("quality", form);
   const pendingRef = useRef<Record<string, unknown>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [creds, setCreds] = useState<CredRow[]>([]);
 
   useEffect(() => {
     if (data) {
@@ -53,9 +75,22 @@ export default function SettingsPage() {
         output_format: output_format === "audio" ? "mp4" : output_format,
         proxy_record_platforms: String(proxy_record_platforms ?? "").split(",").filter(Boolean),
       });
+      setCreds(parseCreds(data.settings.platform_credentials));
       tokenForm.setFieldsValue({ token: getToken() });
     }
   }, [data, form, tokenForm]);
+
+  // 更新凭证表：同步进表单；文本输入用防抖保存（immediate=false），选择/删除即时保存
+  const updateCreds = (rows: CredRow[], immediate = true) => {
+    setCreds(rows);
+    form.setFieldsValue({ platform_credentials: JSON.stringify(rows) });
+    if (immediate) {
+      flushAutoSave();
+      return;
+    }
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(flushAutoSave, 800);
+  };
 
   const flushAutoSave = () => {
     if (timerRef.current) {
@@ -96,6 +131,10 @@ export default function SettingsPage() {
         initialValues={{ output_format: "mp4", quality: "OD", check_interval: 60 }}
         onValuesChange={handleValuesChange}
       >
+        {/* 隐藏字段承载平台凭证 JSON，随表单一起保存 */}
+        <Form.Item name="platform_credentials" hidden>
+          <Input />
+        </Form.Item>
         <Row gutter={[16, 16]}>
           <Col xs={24} xl={12}>
             <Card title="常规录制" loading={isLoading} style={{ height: "100%" }}>
@@ -103,7 +142,7 @@ export default function SettingsPage() {
                 <Col xs={24} sm={8}>
                   <Form.Item
                     name="check_interval"
-                    label="循环时间（秒）"
+                    label="检测时间（秒）"
                     tooltip="每个房间独立轮询的默认间隔，实际会有 ±15% 随机抖动"
                     rules={[{ required: true, message: "必填" }]}
                   >
@@ -211,6 +250,65 @@ export default function SettingsPage() {
           </Col>
 
           <Col xs={24} xl={12}>
+            <Card title="网络与通知" loading={isLoading} style={{ height: "100%" }}>
+              <Row gutter={[12, 8]}>
+                <Col xs={24} sm={8}>
+                  <Form.Item
+                    name="force_https"
+                    label="强制 HTTPS 录制"
+                    valuePropName="checked"
+                    tooltip="把 http 流地址改写为 https，规避 CDN 劫持/拦截"
+                  >
+                    <Switch />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={8}>
+                  <Form.Item
+                    name="flv_direct_download"
+                    label="FLV 源下载器直连"
+                    valuePropName="checked"
+                    tooltip="FLV 流改用下载器直连录制（延迟更低，规避 FFmpeg 兼容问题）；不支持额外参数，分段到点直接切文件"
+                  >
+                    <Switch />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={8}>
+                  <Form.Item
+                    name="proxy_addr"
+                    label="代理地址"
+                    tooltip="用于检测与解析；配合“代理录制平台”也用于拉流，留空不使用"
+                  >
+                    <Input placeholder="http://127.0.0.1:7890" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24}>
+                  <Form.Item
+                    name="proxy_record_platforms"
+                    label="默认使用代理录制的平台"
+                    tooltip="所选平台的 FFmpeg 拉流走上方代理地址（国际平台需要），其余平台直连"
+                  >
+                    <Select
+                      mode="multiple"
+                      allowClear
+                      placeholder="不使用代理录制"
+                      options={(platforms ?? []).map((p) => ({ value: p.key, label: p.name }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24}>
+                  <Form.Item
+                    name="webhook_url"
+                    label="Webhook 通知"
+                    tooltip="录制会话开始/结束时 POST JSON，可对接钉钉、企业微信、Bark 等；留空不启用"
+                  >
+                    <Input placeholder="https://example.com/webhook" />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </Card>
+          </Col>
+
+          <Col xs={24} xl={12}>
             <Card title="分段与保护" loading={isLoading} style={{ height: "100%" }}>
               <Row gutter={[12, 8]}>
                 <Col xs={24} sm={8}>
@@ -298,65 +396,6 @@ export default function SettingsPage() {
           </Col>
 
           <Col xs={24} xl={12}>
-            <Card title="网络与 FFmpeg" loading={isLoading} style={{ height: "100%" }}>
-              <Row gutter={[12, 8]}>
-                <Col xs={24} sm={8}>
-                  <Form.Item
-                    name="force_https"
-                    label="强制 HTTPS 录制"
-                    valuePropName="checked"
-                    tooltip="把 http 流地址改写为 https，规避 CDN 劫持/拦截"
-                  >
-                    <Switch />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={8}>
-                  <Form.Item
-                    name="flv_direct_download"
-                    label="FLV 源下载器直连"
-                    valuePropName="checked"
-                    tooltip="FLV 流改用下载器直连录制（延迟更低，规避 FFmpeg 兼容问题）；不支持额外参数，分段到点直接切文件"
-                  >
-                    <Switch />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={8}>
-                  <Form.Item
-                    name="proxy_addr"
-                    label="代理地址"
-                    tooltip="用于检测与解析；配合“代理录制平台”也用于拉流，留空不使用"
-                  >
-                    <Input placeholder="http://127.0.0.1:7890" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24}>
-                  <Form.Item
-                    name="proxy_record_platforms"
-                    label="默认使用代理录制的平台"
-                    tooltip="所选平台的 FFmpeg 拉流走上方代理地址（国际平台需要），其余平台直连"
-                  >
-                    <Select
-                      mode="multiple"
-                      allowClear
-                      placeholder="不使用代理录制"
-                      options={(platforms ?? []).map((p) => ({ value: p.key, label: p.name }))}
-                    />
-                  </Form.Item>
-                </Col>
-                <Col xs={24}>
-                  <Form.Item
-                    name="webhook_url"
-                    label="Webhook 通知"
-                    tooltip="录制会话开始/结束时 POST JSON，可对接钉钉、企业微信、Bark 等；留空不启用"
-                  >
-                    <Input placeholder="https://example.com/webhook" />
-                  </Form.Item>
-                </Col>
-              </Row>
-            </Card>
-          </Col>
-
-          <Col xs={24} xl={12}>
             <Card title="录制后处理" loading={isLoading} style={{ height: "100%" }}>
               <Row gutter={[12, 8]}>
                 <Col xs={24} sm={8}>
@@ -430,33 +469,104 @@ export default function SettingsPage() {
 
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={12}>
-          <Card title="访问令牌">
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="仅在服务端设置了 RECORDER_ACCESS_TOKEN 时需要。令牌只保存在当前浏览器。"
-            />
-            <Form
-              form={tokenForm}
-              layout="vertical"
-              onFinish={(values) => {
-                setToken(values.token?.trim() ?? "");
-                message.success("令牌已保存到本地浏览器");
-              }}
-            >
-              <Form.Item name="token" label="访问令牌">
-                <Input.Password placeholder="留空表示不使用" visibilityToggle={false} />
-              </Form.Item>
-              <Button htmlType="submit">保存令牌</Button>
-            </Form>
+          <Card title="平台登录" loading={isLoading}>
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <Alert
+                type="info"
+                showIcon
+                message="此处 Cookie 为对应平台的兜底登录凭证（房间未单独配置 Cookie 时生效）。每个平台限一行。"
+              />
+              <Table<CredRow>
+                size="small"
+                rowKey={(_, index) => String(index)}
+                dataSource={creds}
+                pagination={false}
+                columns={
+                  [
+                    {
+                      title: "平台",
+                      width: 160,
+                      dataIndex: "platform",
+                      render: (_, record, index) => (
+                        <Select
+                          showSearch
+                          optionFilterProp="label"
+                          style={{ width: "100%" }}
+                          placeholder="选择平台"
+                          value={record.platform || undefined}
+                          options={(platforms ?? [])
+                            .filter((p) => p.key === record.platform || !creds.some((r) => r.platform === p.key))
+                            .map((p) => ({ value: p.key, label: p.name }))}
+                          onChange={(v) =>
+                            updateCreds(creds.map((r, i) => (i === index ? { ...r, platform: v } : r)))
+                          }
+                        />
+                      ),
+                    },
+                    {
+                      title: "Cookie",
+                      dataIndex: "cookie",
+                      render: (_, record, index) => (
+                        <Input.TextArea
+                          autoSize={{ minRows: 1, maxRows: 4 }}
+                          placeholder="粘贴该平台的 Cookie（选填）"
+                          value={record.cookie}
+                          onChange={(e) =>
+                            updateCreds(
+                              creds.map((r, i) => (i === index ? { ...r, cookie: e.target.value } : r)),
+                              false,
+                            )
+                          }
+                        />
+                      ),
+                    },
+                    {
+                      title: "操作",
+                      width: 70,
+                      render: (_, __, index) => (
+                        <Button
+                          type="link"
+                          danger
+                          size="small"
+                          onClick={() => updateCreds(creds.filter((_, i) => i !== index))}
+                        >
+                          删除
+                        </Button>
+                      ),
+                    },
+                  ] as ColumnsType<CredRow>
+                }
+              />
+              <Button onClick={() => updateCreds([...creds, { platform: "", cookie: "" }])}>添加平台行</Button>
+            </Space>
           </Card>
         </Col>
+
         <Col xs={24} xl={12}>
-          <Card title="关于" style={{ height: "100%" }}>
-            <Typography.Text type="secondary">
-              StreamGet 录播台 v{summary?.version ?? "…"} · 基于 streamget（流地址解析）+ FFmpeg（录制）
-            </Typography.Text>
+          <Card title="关于与令牌">
+            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+              <Alert
+                type="info"
+                showIcon
+                message="仅在服务端设置了 RECORDER_ACCESS_TOKEN 时需要。令牌只保存在当前浏览器。"
+              />
+              <Form
+                form={tokenForm}
+                layout="vertical"
+                onFinish={(values) => {
+                  setToken(values.token?.trim() ?? "");
+                  message.success("令牌已保存到本地浏览器");
+                }}
+              >
+                <Form.Item name="token" label="访问令牌" style={{ maxWidth: 480, marginBottom: 12 }}>
+                  <Input.Password placeholder="留空表示不使用" visibilityToggle={false} />
+                </Form.Item>
+                <Button htmlType="submit">保存令牌</Button>
+              </Form>
+              <Typography.Text type="secondary">
+                StreamGet 录播台 v{summary?.version ?? "…"} · 基于 streamget（流地址解析）+ FFmpeg（录制）
+              </Typography.Text>
+            </Space>
           </Card>
         </Col>
       </Row>

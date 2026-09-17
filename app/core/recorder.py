@@ -6,6 +6,7 @@
 
 import asyncio
 import contextlib
+import json
 import os
 import re
 import shlex
@@ -45,7 +46,8 @@ class Recorder:
         self._check = check
         self._settings = settings
         proxy = str(settings.get("proxy_addr") or "") or None
-        self._monitor = RoomMonitor(room.platform, cookies=room.cookie or None, proxy_addr=proxy)
+        cookie = room.cookie or self._platform_cookie(room.platform)
+        self._monitor = RoomMonitor(room.platform, cookies=cookie or None, proxy_addr=proxy)
         self._stop_requested = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._proc: asyncio.subprocess.Process | None = None
@@ -80,6 +82,20 @@ class Recorder:
     @property
     def platform_is_custom(self) -> bool:
         return self._platform == "custom"
+
+    def _platform_cookie(self, platform: str) -> str | None:
+        """从设置的平台登录凭证中取该平台的 Cookie（房间未单独配置 Cookie 时的兜底）。"""
+        try:
+            items = json.loads(str(self._settings.get("platform_credentials") or "[]"))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            if isinstance(item, dict) and item.get("platform") == platform:
+                cookie = str(item.get("cookie") or "").strip()
+                return cookie or None
+        return None
 
     # ---------- 主循环 ----------
 

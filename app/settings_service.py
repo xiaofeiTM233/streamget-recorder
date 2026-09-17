@@ -40,6 +40,7 @@ DEFAULTS: dict[str, object] = {
     "ffmpeg_path": "ffmpeg",     # FFmpeg 可执行文件路径
     "ffmpeg_extra_args": "",     # FFmpeg 额外输出参数（追加在输出选项后），空 = 无
     "proxy_addr": "",            # 全局代理（检测与解析用；配合 proxy_record_platforms 也用于拉流），空 = 不使用
+    "platform_credentials": "[]",  # 平台登录凭证 JSON 数组：[{"platform":"x","cookie":""}]，房间未配 Cookie 时的兜底（streamget 仅支持 Cookie 登录）
     "reconnect_backoff_max": 300,  # 断流/失败重试的最大退避（秒）
     "file_template": "{platform}/{anchor}/{datetime}_{title}",
 }
