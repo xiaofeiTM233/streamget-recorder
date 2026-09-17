@@ -1,4 +1,4 @@
-"""ORM 模型：房间、录制会话、分段文件、运行时设置。"""
+"""ORM 模型：房间、录制会话、分段文件（运行时设置存 data/settings.json）。"""
 
 from datetime import datetime
 
@@ -76,11 +76,4 @@ class RecordingFile(Base):
     end_time: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     status: Mapped[str] = mapped_column(String(16), default="recording")  # recording|finished|error
 
-    session: Mapped[RecordingSession] = relationship(back_populates="files")
-
-
-class SettingKV(Base):
-    __tablename__ = "settings"
-
-    key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    value: Mapped[str] = mapped_column(Text, default="")
+    session: Mapped["RecordingSession"] = relationship(back_populates="files")

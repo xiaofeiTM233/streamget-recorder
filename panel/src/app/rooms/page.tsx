@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { PlusOutlined, ReloadOutlined, SyncOutlined } from "@ant-design/icons";
 import {
   App as AntApp,
   Button,
@@ -25,9 +25,8 @@ import {
   useRooms,
 } from "@/lib/api";
 import { useEvents } from "@/lib/events";
+import { QUALITY_LABELS, qualityLabel } from "@/lib/types";
 import type { RoomOut, RoomPayload } from "@/lib/types";
-
-const QUALITIES = ["OD", "UHD", "HD", "SD", "LD"];
 
 interface FormState {
   id: number | null;
@@ -36,6 +35,8 @@ interface FormState {
   quality: string | undefined;
   check_interval: number | undefined;
   cookie: string;
+  clearCookie: boolean;
+  hasCookie: boolean;
   remark: string;
   enabled: boolean;
 }
@@ -47,6 +48,8 @@ const EMPTY_FORM: FormState = {
   quality: undefined,
   check_interval: undefined,
   cookie: "",
+  clearCookie: false,
+  hasCookie: false,
   remark: "",
   enabled: true,
 };
@@ -56,7 +59,7 @@ export default function RoomsPage() {
   const { data: rooms, isLoading, refetch, isFetching } = useRooms();
   const { data: platforms } = usePlatforms();
   const { progress } = useEvents();
-  const { create, update, remove, batchToggle, checkNow, stop } = useRoomMutations();
+  const { create, update, remove, batchToggle, checkNow, stop, checkAll } = useRoomMutations();
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [modalOpen, setModalOpen] = useState(false);
@@ -72,9 +75,11 @@ export default function RoomsPage() {
       id: room.id,
       room_url: room.room_url,
       platform: room.platform,
-      quality: room.quality,
+      quality: room.quality || undefined,
       check_interval: room.check_interval ?? undefined,
       cookie: "",
+      clearCookie: false,
+      hasCookie: room.has_cookie,
       remark: room.remark,
       enabled: room.enabled,
     });
@@ -96,13 +101,12 @@ export default function RoomsPage() {
     };
     try {
       if (form.id == null) {
-        await create.mutateAsync(payload);
+        await create.mutateAsync({ ...payload, cookie: form.cookie || undefined });
         message.success("房间已添加");
       } else {
-        await update.mutateAsync({
-          id: form.id,
-          payload: { ...payload, cookie: form.cookie ? form.cookie : undefined },
-        });
+        // Cookie 三态：输入新值 = 更新；勾选清除 = 删除；留空 = 保持不变
+        const cookie = form.cookie ? form.cookie : form.clearCookie ? "" : undefined;
+        await update.mutateAsync({ id: form.id, payload: { ...payload, cookie } });
         message.success("房间已更新");
       }
       setModalOpen(false);
@@ -168,6 +172,22 @@ export default function RoomsPage() {
               </Button>
             </>
           )}
+          <Button
+            size="small"
+            icon={<SyncOutlined />}
+            loading={checkAll.isPending}
+            onClick={async () => {
+              try {
+                const r = await checkAll.mutateAsync();
+                message.success(`已触发 ${r.triggered} 个房间的立即检测`);
+                refetch();
+              } catch (err) {
+                message.error((err as Error).message);
+              }
+            }}
+          >
+            全部刷新
+          </Button>
           <Button icon={<ReloadOutlined />} size="small" loading={isFetching} onClick={() => refetch()} />
           <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openCreate}>
             添加房间
@@ -253,7 +273,12 @@ export default function RoomsPage() {
               </a>
             ),
           },
-          { title: "清晰度", dataIndex: "quality", width: 80 },
+          {
+            title: "清晰度",
+            dataIndex: "quality",
+            width: 80,
+            render: (q: string) => qualityLabel(q),
+          },
           {
             title: "间隔",
             dataIndex: "check_interval",
@@ -343,7 +368,7 @@ export default function RoomsPage() {
               value={form.quality}
               onChange={(v) => setForm({ ...form, quality: v })}
               allowClear
-              options={QUALITIES.map((q) => ({ value: q, label: q }))}
+              options={Object.entries(QUALITY_LABELS).map(([value, label]) => ({ value, label }))}
             />
             <InputNumber
               style={{ width: 140 }}
@@ -357,10 +382,18 @@ export default function RoomsPage() {
           <Input.TextArea
             placeholder="Cookie（可选，YouTube/淘宝等平台必需；敏感信息仅保存在本机数据库）"
             value={form.cookie}
-            onChange={(e) => setForm({ ...form, cookie: e.target.value })}
+            onChange={(e) => setForm({ ...form, cookie: e.target.value, clearCookie: false })}
             rows={2}
-            disabled={form.id == null}
           />
+          {form.id != null && form.hasCookie && (
+            <Button
+              size="small"
+              danger={form.clearCookie}
+              onClick={() => setForm({ ...form, clearCookie: !form.clearCookie })}
+            >
+              {form.clearCookie ? "已勾选：保存时删除 Cookie" : "删除已保存的 Cookie"}
+            </Button>
+          )}
           <Input
             placeholder="备注（可选）"
             value={form.remark}

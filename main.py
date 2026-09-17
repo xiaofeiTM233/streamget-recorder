@@ -59,6 +59,55 @@ async def recover_interrupted() -> None:
             )
 
 
+async def retention_cleanup_loop(settings_svc: SettingsService) -> None:
+    """按设置的保留天数定期清理过期录制文件（含数据库记录），0 = 永久保留。"""
+    from datetime import timedelta
+
+    from sqlalchemy import delete, exists, select
+
+    while True:
+        await asyncio.sleep(3600)  # 每小时检查一次
+        try:
+            days = int(settings_svc.get("retention_days") or 0)
+            if days <= 0:
+                continue
+            cutoff = utcnow() - timedelta(days=days)
+            root = settings_svc.record_root()
+            removed = 0
+            factory = session_factory()
+            async with factory() as s:
+                rows = (await s.execute(
+                    select(RecordingFile).where(
+                        RecordingFile.end_time < cutoff,
+                        RecordingFile.status != "recording",  # 正在录制的文件不清理
+                    )
+                )).scalars().all()
+                for f in rows:
+                    try:
+                        (root / f.file_path).unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning("清理录制文件失败 {}: {}", f.file_path, exc)
+                    await s.delete(f)
+                    removed += 1
+                # 顺带清理超期且已无分段的空会话记录
+                await s.execute(
+                    delete(RecordingSession).where(
+                        RecordingSession.end_time < cutoff,
+                        RecordingSession.status != "recording",
+                        ~exists(select(RecordingFile.session_id).where(
+                            RecordingFile.session_id == RecordingSession.id
+                        )),
+                    )
+                )
+                await s.commit()
+            if removed:
+                logger.info("已按保留期（{} 天）清理 {} 个录制文件", days, removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("录制文件保留期清理任务异常")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config.resolve_paths(BASE_DIR)
@@ -79,10 +128,15 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     log_buffer.attach(lambda line: bus.publish("log", line=line))
 
+    retention_task = asyncio.create_task(retention_cleanup_loop(settings_svc))
+
     logger.info("录播服务已就绪 v{} → http://{}:{}（数据目录: {}）", __version__, config.host, config.port, config.data_dir)
     yield
 
     logger.info("正在停止服务…")
+    retention_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await retention_task
     log_buffer.attach(lambda line: None)
     await scheduler.stop()
     await manager.stop_all()

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from ..db import session_factory
@@ -29,6 +29,14 @@ def _file_out(f: RecordingFile) -> dict:
         "status": f.status,
         "download_url": f"/api/recordings/files/{f.id}/download",
     }
+
+
+def _browse_file(f: RecordingFile, sess: RecordingSession) -> dict:
+    """浏览模式的文件条目（带主播/标题，便于跨目录搜索展示）。"""
+    out = _file_out(f)
+    out["anchor_name"] = sess.anchor_name or ""
+    out["title"] = sess.title or ""
+    return out
 
 
 def _session_out(s: RecordingSession) -> dict:
@@ -99,6 +107,71 @@ async def list_recordings(
         "page": page,
         "page_size": page_size,
         "items": [_session_out(r) for r in rows],
+    }
+
+
+@router.get("/browse")
+async def browse_recordings(
+    request: Request,
+    path: str = Query("", description="文件夹路径（相对录制根目录，/ 分隔）"),
+    search: str = Query("", description="按文件名/主播/标题跨目录搜索"),
+):
+    """资源管理器式浏览：返回当前层级的子文件夹（含文件数/总大小）与文件。"""
+    parts = [p for p in path.replace("\\", "/").split("/") if p and p not in (".", "..")]
+    norm = "/".join(parts)
+    prefix = norm + "/" if norm else ""
+    factory = session_factory()
+    async with factory() as s:
+        if search.strip():
+            like = f"%{search.strip()}%"
+            rows = (
+                await s.execute(
+                    select(RecordingFile, RecordingSession)
+                    .join(RecordingSession, RecordingFile.session_id == RecordingSession.id)
+                    .where(
+                        or_(
+                            RecordingFile.file_path.like(like),
+                            RecordingSession.anchor_name.like(like),
+                            RecordingSession.title.like(like),
+                        )
+                    )
+                    .order_by(RecordingFile.start_time.desc())
+                    .limit(500)
+                )
+            ).all()
+            return {
+                "path": "",
+                "search": search.strip(),
+                "folders": [],
+                "files": [_browse_file(f, sess) for f, sess in rows],
+            }
+        # 路径需转义 LIKE 通配符（文件夹名可能含 % _ 等字符）
+        escaped = norm.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") if norm else ""
+        pattern = escaped + "/%" if escaped else "%"
+        rows = (
+            await s.execute(
+                select(RecordingFile, RecordingSession)
+                .join(RecordingSession, RecordingFile.session_id == RecordingSession.id)
+                .where(RecordingFile.file_path.like(pattern, escape="\\"))
+                .order_by(RecordingFile.file_path)
+            )
+        ).all()
+    folders: dict[str, dict] = {}
+    files: list[dict] = []
+    for f, sess in rows:
+        rest = f.file_path[len(prefix):] if prefix else f.file_path
+        if "/" in rest:
+            name = rest.split("/", 1)[0]
+            entry = folders.setdefault(name, {"name": name, "file_count": 0, "size": 0})
+            entry["file_count"] += 1
+            entry["size"] += f.size or 0
+        else:
+            files.append(_browse_file(f, sess))
+    return {
+        "path": norm,
+        "search": "",
+        "folders": sorted(folders.values(), key=lambda d: d["name"]),
+        "files": sorted(files, key=lambda x: x["start_time"] or "", reverse=True),
     }
 
 

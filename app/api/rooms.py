@@ -91,7 +91,8 @@ async def create_room(payload: RoomCreate, request: Request):
 @router.put("/{room_id}")
 async def update_room(room_id: int, payload: RoomUpdate, request: Request):
     state = get_state(request)
-    quality = validate_quality(payload.quality)
+    # 用"字段是否显式提交"区分 未提供（不修改）与 提交 null（清空，恢复跟随全局）
+    provided = payload.model_fields_set
     factory = session_factory()
     async with factory() as s:
         room = await s.get(Room, room_id)
@@ -99,14 +100,15 @@ async def update_room(room_id: int, payload: RoomUpdate, request: Request):
             raise HTTPException(status_code=404, detail="房间不存在")
         if payload.room_url is not None:
             room.room_url = payload.room_url.strip()
-        if quality is not None:
-            room.quality = quality
-        if payload.check_interval is not None:
-            room.check_interval = payload.check_interval
+        if "quality" in provided:
+            # 显式提交：null/非法清空 = 跟随全局（存储空串，录制时回退全局设置）
+            room.quality = validate_quality(payload.quality) if payload.quality else ""
+        if "check_interval" in provided:
+            room.check_interval = payload.check_interval  # 显式 null = 跟随全局
         if payload.cookie is not None:
-            room.cookie = payload.cookie
-        if payload.remark is not None:
-            room.remark = payload.remark
+            room.cookie = payload.cookie  # 空串 = 删除 Cookie
+        if "remark" in provided:
+            room.remark = payload.remark or ""
         if payload.enabled is not None:
             room.enabled = payload.enabled
         await s.commit()
@@ -154,6 +156,14 @@ async def batch_toggle(payload: BatchRoomToggle, request: Request):
     return {"updated": updated}
 
 
+@router.post("/check-all")
+async def check_all_rooms(request: Request):
+    """全部刷新：唤醒所有房间的轮询任务立即重新检测。"""
+    state = get_state(request)
+    triggered = state.scheduler.trigger_check_all()
+    return {"triggered": triggered}
+
+
 @router.post("/{room_id}/check")
 async def check_room_now(room_id: int, request: Request):
     """立即检测一次：开播则直接开始录制。"""
@@ -177,8 +187,8 @@ async def check_room_now(room_id: int, request: Request):
             await s.commit()
     started = False
     if check.is_live and room.enabled:
-        await state.manager.start(room, check)
-        started = True
+        recorder = await state.manager.start(room, check)
+        started = recorder is not None  # 并发上限已满时为 False，调度器稍后会自动重试
     return {
         "is_live": check.is_live,
         "started": started,

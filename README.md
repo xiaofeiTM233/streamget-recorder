@@ -17,7 +17,7 @@ FastAPI 单进程
    ├─ RecorderManager → Recorder（每路录制）
    │     └─ FFmpeg 子进程（-c copy 不转码，'q' 优雅收尾）
    ├─ 事件总线 → WebSocket 实时推送状态/进度/日志
-   └─ SQLite（SQLAlchemy 2.0 async, WAL）
+   └─ SQLite（SQLAlchemy 2.0 async, WAL）房间/录制记录 + JSON 文件（settings.json）运行时设置
 streamget 解析流地址 │ FFmpeg 录制 │ Node.js（部分平台签名）
 ```
 
@@ -66,10 +66,10 @@ uv run python scripts/dev_record_test.py   # 用公开测试流完整跑一遍�
 
 ## 使用
 
-1. **房间管理** → 添加直播间地址（自动识别平台；YouTube / 淘宝需填 Cookie，个别平台需 Cookie 时界面有提示）
+1. **房间管理** → 添加直播间地址（自动识别平台；YouTube / 淘宝需填 Cookie，个别平台需 Cookie 时界面有提示）；支持批量启停、全部刷新（立即检测所有房间）
 2. 开播后自动录制，**仪表盘** 实时显示时长 / 大小 / 码率
-3. **录制文件** → 按主播 / 日期检索、下载、删除
-4. **设置** → 检测间隔、清晰度（OD~LD）、输出格式（MP4/FLV）、保存目录模板、FFmpeg 路径、代理
+3. **录制文件** → 资源管理器式文件夹浏览（面包屑导航、双击进入、跨目录搜索）、下载、删除
+4. **设置** → 循环时间、下播确认延迟、清晰度（OD~LD、仅音频）、录制格式（MP4/FLV）、音频格式（自动/AAC/M4A/MP3）、拉流协议优先级（FLV/HLS）、保存目录模板；**分段与录制保护**：分段录制（开关+秒数）、单场最大时长、磁盘剩余阈值、连续失败上限、录制文件保留天数（自动清理）、全局/平台并发上限；**网络与 FFmpeg**：强制 HTTPS 录制、FLV 源下载器直连、代理、代理录制平台、Webhook 事件通知；**录制后处理**：转 MP4（可删原文件）、时间字幕文件、录后自定义脚本、FFmpeg 路径与额外参数
 
 ## 配置
 
@@ -92,10 +92,10 @@ recorder/
 ├── main.py               # FastAPI 入口：生命周期 + 路由 + panel 静态托管
 ├── app/
 │   ├── config.py         # 启动配置（环境变量）
-│   ├── db.py / models.py # SQLite + ORM（rooms / recording_sessions / recording_files / settings）
+│   ├── db.py / models.py # SQLite + ORM（rooms / recording_sessions / recording_files）
+│   ├── settings_service.py # 运行时设置（data/settings.json）
 │   ├── platforms.py      # 平台注册表 + URL 自动识别 + custom 直链平台
-│   ├── settings_service.py  # 运行时设置（网页可改，即时生效）
-│   ├── api/              # rooms / recordings / settings / system / ws
+│   └── api/              # rooms / recordings / settings / system / ws
 │   └── core/
 │       ├── monitor.py    # streamget 封装（检测 + 解析，含 B 站 live_status 兼容）
 │       ├── scheduler.py  # 轮询调度器

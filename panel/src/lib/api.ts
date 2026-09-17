@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  BrowseResult,
   PlatformInfo,
   RecordingList,
   RoomOut,
@@ -128,13 +129,16 @@ export function useRoomMutations() {
     mutationFn: (id: number) => api<{ stopped: boolean }>(`/api/rooms/${id}/stop`, { method: "POST" }),
     onSuccess: invalidate,
   });
-  return { create, update, remove, batchToggle, checkNow, stop };
+  const checkAll = useMutation({
+    mutationFn: () => api<{ triggered: number }>("/api/rooms/check-all", { method: "POST" }),
+  });
+  return { create, update, remove, batchToggle, checkNow, stop, checkAll };
 }
 
 export function useSettingsMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (updates: Record<string, string | number>) =>
+    mutationFn: (updates: Record<string, string | number | boolean>) =>
       api<SettingsPayload>("/api/settings", { method: "PUT", body: JSON.stringify(updates) }),
     onSuccess: (data) => qc.setQueryData(["settings"], data),
   });
@@ -144,6 +148,7 @@ export function useRecordingMutations() {
   const qc = useQueryClient();
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["recordings"] });
+    qc.invalidateQueries({ queryKey: ["browse"] });
     qc.invalidateQueries({ queryKey: ["summary"] });
   };
   const deleteFile = useMutation({
@@ -152,6 +157,18 @@ export function useRecordingMutations() {
     onSuccess: invalidate,
   });
   return { deleteFile };
+}
+
+export function useBrowse(path: string, search: string) {
+  return useQuery({
+    queryKey: ["browse", path, search],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (path) qs.set("path", path);
+      if (search) qs.set("search", search);
+      return api<BrowseResult>(`/api/recordings/browse${qs.size ? `?${qs.toString()}` : ""}`);
+    },
+  });
 }
 
 /* ---------- 工具 ---------- */

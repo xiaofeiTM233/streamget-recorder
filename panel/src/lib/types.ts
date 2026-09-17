@@ -93,8 +93,34 @@ export interface Summary {
   version: string;
 }
 
+export interface BrowseFile {
+  id: number;
+  file_path: string;
+  filename: string;
+  size: number;
+  duration: number;
+  start_time: string | null;
+  status: string;
+  anchor_name: string;
+  title: string;
+  download_url: string;
+}
+
+export interface BrowseFolder {
+  name: string;
+  file_count: number;
+  size: number;
+}
+
+export interface BrowseResult {
+  path: string;
+  search: string;
+  folders: BrowseFolder[];
+  files: BrowseFile[];
+}
+
 export interface SettingsPayload {
-  settings: Record<string, string | number>;
+  settings: Record<string, string | number | boolean>;
   record_dir: string;
 }
 
@@ -106,4 +132,19 @@ export interface RoomPayload {
   cookie?: string | null;
   remark?: string | null;
   enabled?: boolean;
+}
+
+/** 清晰度代码 → 中文显示名（存储值仍为英文代码）。audio = 仅录制音频。 */
+export const QUALITY_LABELS: Record<string, string> = {
+  OD: "原画",
+  UHD: "蓝光(4K)",
+  HD: "高清",
+  SD: "标清",
+  LD: "流畅",
+  audio: "仅音频",
+};
+
+export function qualityLabel(q: string | null | undefined): string {
+  if (!q) return "默认";
+  return QUALITY_LABELS[q] ?? q;
 }

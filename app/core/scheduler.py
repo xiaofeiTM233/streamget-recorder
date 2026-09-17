@@ -50,6 +50,12 @@ class PollingScheduler:
         if wake is not None:
             wake.set()
 
+    def trigger_check_all(self) -> int:
+        """全部刷新：唤醒所有轮询任务立即检测一遍，返回唤醒数量。"""
+        for wake in self._wakes.values():
+            wake.set()
+        return len(self._wakes)
+
     async def stop(self) -> None:
         self._closing = True
         for room_id in list(self._tasks):
@@ -89,6 +95,11 @@ class PollingScheduler:
             await self._update_after_check(room_id, check)
             if check.is_live:
                 recorder = await self._manager.start(room, check)
+                if recorder is None:
+                    # 并发上限已满：标记状态等待空位，稍后自动重试
+                    await self._set_room_status(room_id, "error", "并发录制数已达上限，等待空位后自动重试")
+                    await self._sleep(wake, 30)
+                    continue
                 await recorder.wait()  # 录制会话结束（下播/异常）后再恢复轮询
                 await self._sleep(wake, 5)
             else:

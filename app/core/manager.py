@@ -25,11 +25,16 @@ class RecorderManager:
     def active_room_ids(self) -> list[int]:
         return list(self._recorders)
 
-    async def start(self, room: Room, check: CheckResult) -> Recorder:
-        """开始录制；已在录制中则直接返回现有实例（并发去重）。"""
+    async def start(self, room: Room, check: CheckResult) -> Recorder | None:
+        """开始录制；已在录制中则直接返回现有实例（并发去重）。
+
+        并发上限（全局/单平台，0 = 不限制）已满时返回 None，由调用方等待空位。
+        """
         existing = self._recorders.get(room.id)
         if existing is not None:
             return existing
+        if not self._slot_available(room.platform):
+            return None
         recorder = Recorder(room=room, check=check, settings=self._settings)
         self._recorders[room.id] = recorder
         recorder.start()
@@ -37,6 +42,17 @@ class RecorderManager:
         if task is not None:
             task.add_done_callback(lambda t, r=recorder: self._cleanup(r, t))
         return recorder
+
+    def _slot_available(self, platform: str) -> bool:
+        max_all = int(self._settings.get("max_concurrent") or 0)
+        if max_all > 0 and len(self._recorders) >= max_all:
+            return False
+        max_pf = int(self._settings.get("max_concurrent_per_platform") or 0)
+        if max_pf > 0:
+            active = sum(1 for r in self._recorders.values() if r.platform == platform)
+            if active >= max_pf:
+                return False
+        return True
 
     def _cleanup(self, recorder: Recorder, task: asyncio.Task) -> None:
         self._recorders.pop(recorder.room_id, None)
