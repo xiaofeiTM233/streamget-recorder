@@ -19,3 +19,4 @@ panel/*.tsbuildinfo
 # PyInstaller 打包产物
 build/
 dist/
+StreamGetRecorder.exe
