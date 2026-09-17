@@ -16,6 +16,7 @@ class RoomCreate(BaseModel):
     cookie: str | None = None
     remark: str | None = None
     enabled: bool = True
+    overrides: dict[str, Any] | None = None
 
 
 class RoomUpdate(BaseModel):
@@ -25,6 +26,7 @@ class RoomUpdate(BaseModel):
     cookie: str | None = None
     remark: str | None = None
     enabled: bool | None = None
+    overrides: dict[str, Any] | None = None
 
 
 class RoomOut(BaseModel):
@@ -36,6 +38,7 @@ class RoomOut(BaseModel):
     remark: str
     quality: str
     check_interval: int | None
+    overrides: dict[str, Any]
     has_cookie: bool
     enabled: bool
     status: str
@@ -62,6 +65,50 @@ def validate_quality(quality: str | None) -> str | None:
     if quality not in QUALITIES:
         raise ValueError(f"清晰度必须是 {'/'.join(QUALITIES)}")
     return quality
+
+
+# 房间级可覆盖的设置键及其合法取值（枚举 tuple / 类型 bool/int/str）
+OVERRIDE_KEYS: dict[str, tuple | type] = {
+    "output_format": ("mp4", "flv"),
+    "audio_format": ("auto", "aac", "m4a", "mp3"),
+    "stream_type": ("auto", "flv", "hls"),
+    "segment_enabled": bool,
+    "segment_seconds": int,
+    "max_session_hours": int,
+    "force_https": bool,
+    "flv_direct_download": bool,
+    "auto_convert_mp4": bool,
+    "delete_original_after_convert": bool,
+    "write_time_subtitle": bool,
+    "run_script_after": bool,
+    "script_after_cmd": str,
+}
+
+
+def validate_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
+    """过滤并校验房间级设置覆盖：未知键丢弃，类型不符报错。"""
+    if not overrides:
+        return {}
+    result: dict[str, Any] = {}
+    for key, value in overrides.items():
+        if key not in OVERRIDE_KEYS:
+            continue
+        allowed = OVERRIDE_KEYS[key]
+        if allowed is bool:
+            if not isinstance(value, bool):
+                raise ValueError(f"覆盖项 {key} 必须是布尔值")
+        elif allowed is int:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"覆盖项 {key} 必须是整数")
+        elif allowed is str:
+            value = str(value)
+        else:  # 枚举
+            if value not in allowed:
+                raise ValueError(f"覆盖项 {key} 必须是 {'/'.join(allowed)}")
+        result[key] = value
+    return result
 
 
 def iso(dt: datetime | None) -> str | None:

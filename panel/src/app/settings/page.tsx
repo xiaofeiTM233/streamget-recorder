@@ -41,7 +41,7 @@ function parseCreds(raw: unknown): CredRow[] {
   }
 }
 
-// 文本输入类字段：防抖后再保存，避免逐键提交；其余控件即时保存
+// 文本/数字输入类字段：失去焦点时才保存，不逐字提交；开关/下拉等即时保存
 const TEXT_FIELDS = new Set([
   "file_template",
   "record_dir",
@@ -50,6 +50,16 @@ const TEXT_FIELDS = new Set([
   "proxy_addr",
   "script_after_cmd",
   "webhook_url",
+  "check_interval",
+  "end_confirm_delay",
+  "reconnect_backoff_max",
+  "segment_seconds",
+  "max_session_hours",
+  "min_free_disk_gb",
+  "max_consecutive_failures",
+  "retention_days",
+  "max_concurrent",
+  "max_concurrent_per_platform",
 ]);
 
 export default function SettingsPage() {
@@ -80,26 +90,28 @@ export default function SettingsPage() {
     }
   }, [data, form, tokenForm]);
 
-  // 更新凭证表：同步进表单；文本输入用防抖保存（immediate=false），选择/删除即时保存
+  // 更新凭证表：同步进表单；选择/删除即时保存（immediate=true），文本输入在失焦时保存
   const updateCreds = (rows: CredRow[], immediate = true) => {
     setCreds(rows);
     form.setFieldsValue({ platform_credentials: JSON.stringify(rows) });
     if (immediate) {
-      flushAutoSave();
-      return;
+      flushAutoSave(true);
     }
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(flushAutoSave, 800);
   };
 
-  const flushAutoSave = () => {
+  // force=true 时无条件保存（用于失焦/凭证表等未走 onValuesChange 的场景）
+  const flushAutoSave = (force = false) => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    const pending = pendingRef.current;
-    pendingRef.current = {};
-    if (!Object.keys(pending).length) return;
+    if (force) {
+      pendingRef.current = {};
+    } else {
+      const pending = pendingRef.current;
+      pendingRef.current = {};
+      if (!Object.keys(pending).length) return;
+    }
     const values = form.getFieldsValue();
     const payload: Record<string, string | number | boolean> = { ...values };
     if (Array.isArray(values.proxy_record_platforms)) {
@@ -111,20 +123,18 @@ export default function SettingsPage() {
     });
   };
 
-  const handleValuesChange = (_: unknown, changedValues: Record<string, unknown>) => {
+  // antd onValuesChange 第一参数才是本次变更字段（第二参数是全部表单值，不能用它判断）
+  const handleValuesChange = (changedValues: Record<string, unknown>) => {
     Object.assign(pendingRef.current, changedValues);
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    // 文本输入防抖 800ms，开关/下拉/数字等即时保存
+    // 文本/数字输入不逐字保存，失去焦点时统一保存；开关/下拉等即时保存
     const immediate = Object.keys(changedValues).some((k) => !TEXT_FIELDS.has(k));
     if (immediate) flushAutoSave();
-    else timerRef.current = setTimeout(flushAutoSave, 800);
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+      {/* onBlur 在 React 中会冒泡：任一输入框失焦即触发一次保存检查（有改动才提交） */}
+      <div onBlur={() => flushAutoSave()}>
       <Form
         form={form}
         layout="vertical"
@@ -135,9 +145,9 @@ export default function SettingsPage() {
         <Form.Item name="platform_credentials" hidden>
           <Input />
         </Form.Item>
-        <Row gutter={[16, 16]}>
-          <Col xs={24} xl={12}>
-            <Card title="常规录制" loading={isLoading} style={{ height: "100%" }}>
+        <Row gutter={[16, 16]} style={{ alignItems: "stretch" }}>
+          <Col xs={24} xl={12} style={{ display: "flex" }}>
+            <Card title="常规录制" loading={isLoading} style={{ width: "100%" }}>
               <Row gutter={[12, 8]}>
                 <Col xs={24} sm={8}>
                   <Form.Item
@@ -231,9 +241,12 @@ export default function SettingsPage() {
                   <Form.Item
                     name="file_template"
                     label="保存路径模板"
-                    tooltip="最后一段是文件名主干，可用占位符：{platform} {anchor} {title} {datetime} {quality}"
+                    tooltip="最后一段是文件名主干。占位符：{platform} 平台、{platform_name} 平台中文名、{anchor} 主播、{title} 标题、{remark} 备注、{room_id} 房间ID、{session_id} 会话ID、{datetime} 日期_时间、{date} {time} {year} {month} {day} {hour} {minute} {second} 时间分量、{quality} 清晰度"
                   >
-                    <Input placeholder="{platform}/{anchor}/{datetime}_{title}" />
+                    <Input
+                      placeholder="{platform}/{anchor}/{datetime}_{title}"
+                      onBlur={() => flushAutoSave()}
+                    />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12}>
@@ -242,15 +255,18 @@ export default function SettingsPage() {
                     label="录制保存目录"
                     tooltip={`留空则使用默认目录；当前生效：${data?.record_dir ?? "data/recordings"}`}
                   >
-                    <Input placeholder="默认（data/recordings）" />
+                    <Input
+                      placeholder="默认（data/recordings）"
+                      onBlur={() => flushAutoSave()}
+                    />
                   </Form.Item>
                 </Col>
               </Row>
             </Card>
           </Col>
 
-          <Col xs={24} xl={12}>
-            <Card title="网络与通知" loading={isLoading} style={{ height: "100%" }}>
+          <Col xs={24} xl={12} style={{ display: "flex" }}>
+            <Card title="网络与通知" loading={isLoading} style={{ width: "100%" }}>
               <Row gutter={[12, 8]}>
                 <Col xs={24} sm={8}>
                   <Form.Item
@@ -278,7 +294,10 @@ export default function SettingsPage() {
                     label="代理地址"
                     tooltip="用于检测与解析；配合“代理录制平台”也用于拉流，留空不使用"
                   >
-                    <Input placeholder="http://127.0.0.1:7890" />
+                    <Input
+                      placeholder="http://127.0.0.1:7890"
+                      onBlur={() => flushAutoSave()}
+                    />
                   </Form.Item>
                 </Col>
                 <Col xs={24}>
@@ -301,15 +320,18 @@ export default function SettingsPage() {
                     label="Webhook 通知"
                     tooltip="录制会话开始/结束时 POST JSON，可对接钉钉、企业微信、Bark 等；留空不启用"
                   >
-                    <Input placeholder="https://example.com/webhook" />
+                    <Input
+                      placeholder="https://example.com/webhook"
+                      onBlur={() => flushAutoSave()}
+                    />
                   </Form.Item>
                 </Col>
               </Row>
             </Card>
           </Col>
 
-          <Col xs={24} xl={12}>
-            <Card title="分段与保护" loading={isLoading} style={{ height: "100%" }}>
+          <Col xs={24} xl={12} style={{ display: "flex" }}>
+            <Card title="录制限制" loading={isLoading} style={{ width: "100%" }}>
               <Row gutter={[12, 8]}>
                 <Col xs={24} sm={8}>
                   <Form.Item
@@ -395,8 +417,8 @@ export default function SettingsPage() {
             </Card>
           </Col>
 
-          <Col xs={24} xl={12}>
-            <Card title="录制后处理" loading={isLoading} style={{ height: "100%" }}>
+          <Col xs={24} xl={12} style={{ display: "flex" }}>
+            <Card title="录制后处理" loading={isLoading} style={{ width: "100%" }}>
               <Row gutter={[12, 8]}>
                 <Col xs={24} sm={8}>
                   <Form.Item
@@ -444,12 +466,15 @@ export default function SettingsPage() {
                     label="脚本执行命令"
                     tooltip="占位符：{file} 完整路径、{filename}、{title}、{anchor}、{platform}、{session_id}"
                   >
-                    <Input placeholder='例如 python D:\scripts\notify.py "{file}"' />
+                    <Input
+                      placeholder='例如 python D:\scripts\notify.py "{file}"'
+                      onBlur={() => flushAutoSave()}
+                    />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12}>
                   <Form.Item name="ffmpeg_path" label="FFmpeg 路径" tooltip="默认在 PATH 中查找 ffmpeg">
-                    <Input placeholder="ffmpeg" />
+                    <Input placeholder="ffmpeg" onBlur={() => flushAutoSave()} />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12}>
@@ -458,7 +483,10 @@ export default function SettingsPage() {
                     label="FFmpeg 额外参数"
                     tooltip="追加到输出参数（如 -bsf:a aac_adtstoasc）；参数非法会导致录制失败"
                   >
-                    <Input placeholder="例如 -bsf:a aac_adtstoasc" />
+                    <Input
+                      placeholder="例如 -bsf:a aac_adtstoasc"
+                      onBlur={() => flushAutoSave()}
+                    />
                   </Form.Item>
                 </Col>
               </Row>
@@ -466,11 +494,12 @@ export default function SettingsPage() {
           </Col>
         </Row>
       </Form>
+      </div>
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24} xl={12}>
-          <Card title="平台登录" loading={isLoading}>
-            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Row gutter={[16, 16]} style={{ alignItems: "stretch" }}>
+        <Col xs={24} xl={12} style={{ display: "flex" }}>
+          <Card title="平台登录" loading={isLoading} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={8} style={{ width: "100%" }}>
               <Alert
                 type="info"
                 showIcon
@@ -517,6 +546,7 @@ export default function SettingsPage() {
                               false,
                             )
                           }
+                          onBlur={() => flushAutoSave(true)}
                         />
                       ),
                     },
@@ -542,9 +572,9 @@ export default function SettingsPage() {
           </Card>
         </Col>
 
-        <Col xs={24} xl={12}>
-          <Card title="关于与令牌">
-            <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Col xs={24} xl={12} style={{ display: "flex" }}>
+          <Card title="关于与令牌" style={{ width: "100%" }}>
+            <Space orientation="vertical" size={12} style={{ width: "100%" }}>
               <Alert
                 type="info"
                 showIcon

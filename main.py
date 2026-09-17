@@ -7,7 +7,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -114,6 +114,19 @@ async def lifespan(app: FastAPI):
     setup_logging()
     await init_db()
 
+    # Windows Proactor 循环在对端强断连接（RST）时会在连接关闭回调里抛
+    # ConnectionResetError(10054)，属已知无害噪音；降为 debug 日志，其余照常处理
+    loop = asyncio.get_running_loop()
+
+    def _quiet_connection_reset(l: asyncio.AbstractEventLoop, context: dict) -> None:
+        exc = context.get("exception")
+        if isinstance(exc, ConnectionResetError):
+            logger.debug("连接被对端重置（已忽略）：{}", exc)
+            return
+        l.default_exception_handler(context)
+
+    loop.set_exception_handler(_quiet_connection_reset)
+
     settings_svc = SettingsService()
     await settings_svc.load()
 
@@ -162,6 +175,14 @@ def create_app() -> FastAPI:
     )
     app.include_router(api_router, prefix="/api")
     app.include_router(ws_router)  # /ws
+
+    # HTML 禁止缓存：避免前端发新版后浏览器仍用旧页面（JS 产物文件名带哈希，可长期缓存）
+    @app.middleware("http")
+    async def _no_cache_html(request: Request, call_next):
+        response = await call_next(request)
+        if "text/html" in response.headers.get("content-type", ""):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     panel_dir: Path = config.panel_dir
     if panel_dir.is_dir():

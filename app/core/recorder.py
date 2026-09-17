@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from ..db import session_factory
 from ..models import RecordingFile, RecordingSession, Room
+from ..platforms import get_platform
 from ..settings_service import SettingsService
 from ..utils import sanitize_component, utcnow
 from .events import bus
@@ -42,9 +43,11 @@ class Recorder:
         self.room_id = room.id
         self._room_url = room.room_url
         self._room_quality = room.quality
+        self._room_remark = room.remark
         self._platform = room.platform
         self._check = check
         self._settings = settings
+        self._overrides: dict = dict(getattr(room, "overrides", None) or {})
         proxy = str(settings.get("proxy_addr") or "") or None
         cookie = room.cookie or self._platform_cookie(room.platform)
         self._monitor = RoomMonitor(room.platform, cookies=cookie or None, proxy_addr=proxy)
@@ -83,6 +86,12 @@ class Recorder:
     def platform_is_custom(self) -> bool:
         return self._platform == "custom"
 
+    def _get(self, key: str):
+        """读取设置：房间级覆盖优先，其次全局设置。"""
+        if key in self._overrides:
+            return self._overrides[key]
+        return self._settings.get(key)
+
     def _platform_cookie(self, platform: str) -> str | None:
         """从设置的平台登录凭证中取该平台的 Cookie（房间未单独配置 Cookie 时的兜底）。"""
         try:
@@ -108,7 +117,7 @@ class Recorder:
                 # 连续失败上限可配置（设置页），默认沿用常量值
                 max_failures = int(self._settings.get("max_consecutive_failures") or _MAX_CONSECUTIVE_FAILURES)
                 # 单场最大录制时长（0 = 不限制），设置页修改后下轮分段生效
-                max_hours = int(self._settings.get("max_session_hours") or 0)
+                max_hours = int(self._get("max_session_hours") or 0)
                 if max_hours > 0 and (time.monotonic() - session_started) >= max_hours * 3600:
                     logger.info("房间 #{} 达到最大录制时长（{} 小时），结束会话", self.room_id, max_hours)
                     break
@@ -216,7 +225,7 @@ class Recorder:
 
     def _prefer_stream_type(self, stream) -> None:
         """按设置的拉流协议优先级改写地址（部分平台同时返回 m3u8 与 flv 两种流地址）。"""
-        st = str(self._settings.get("stream_type") or "auto")
+        st = str(self._get("stream_type") or "auto")
         if st == "auto":
             return
         preferred = getattr(stream, "flv_url" if st == "flv" else "m3u8_url", None)
@@ -285,12 +294,12 @@ class Recorder:
         final_path = out_path
         if status == "finished":
             # 录制完成后转为 MP4（仅 FLV 输出时有意义：mp4 拷贝异常的平台先录 FLV 再转）
-            if bool(self._settings.get("auto_convert_mp4")) and out_path.suffix.lower() == ".flv":
+            if bool(self._get("auto_convert_mp4")) and out_path.suffix.lower() == ".flv":
                 converted = await self._convert_to_mp4(file_id, out_path)
                 if converted is not None:
                     final_path = converted
             # 录制完成后执行自定义脚本（后台运行，不阻塞下一段）
-            if bool(self._settings.get("run_script_after")):
+            if bool(self._get("run_script_after")):
                 self._spawn_after_script(final_path)
         try:
             rel_final = final_path.relative_to(self._settings.record_root())
@@ -331,14 +340,14 @@ class Recorder:
         reader = asyncio.create_task(self._read_stderr(proc, rel_path, out_path, stats))
         # 时间字幕：与录制进程同生命周期，每秒一条 SRT（仅音频时无画面，不生成）
         subtitle_task = None
-        if bool(self._settings.get("write_time_subtitle")) and self._effective_quality() != "audio":
+        if bool(self._get("write_time_subtitle")) and self._effective_quality() != "audio":
             subtitle_task = asyncio.create_task(
                 self._write_time_subtitle(lambda: proc.returncode is None, out_path.with_suffix(".srt"))
             )
         try:
             segment_seconds = 0
-            if bool(self._settings.get("segment_enabled")):
-                segment_seconds = int(self._settings.get("segment_seconds") or 0)
+            if bool(self._get("segment_enabled")):
+                segment_seconds = int(self._get("segment_seconds") or 0)
             if segment_seconds > 0:
                 # 按时长切分：到点优雅收尾（补全 mp4 moov box），主循环会开新分段
                 try:
@@ -371,11 +380,11 @@ class Recorder:
         if parsed.netloc:
             headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
         segment_seconds = 0
-        if bool(self._settings.get("segment_enabled")):
-            segment_seconds = int(self._settings.get("segment_seconds") or 0)
+        if bool(self._get("segment_enabled")):
+            segment_seconds = int(self._get("segment_seconds") or 0)
         stop_evt = asyncio.Event()
         subtitle_task = None
-        if bool(self._settings.get("write_time_subtitle")) and self._effective_quality() != "audio":
+        if bool(self._get("write_time_subtitle")) and self._effective_quality() != "audio":
             subtitle_task = asyncio.create_task(
                 self._write_time_subtitle(stop_evt.is_set, out_path.with_suffix(".srt"))
             )
@@ -436,7 +445,7 @@ class Recorder:
 
     def _use_direct_download(self, url: str) -> bool:
         """FLV 源且开启下载器直连时改用 httpx 下载（仅音频仍走 FFmpeg 丢视频轨）。"""
-        if not bool(self._settings.get("flv_direct_download")):
+        if not bool(self._get("flv_direct_download")):
             return False
         if self._effective_quality() == "audio":
             return False
@@ -444,7 +453,7 @@ class Recorder:
 
     def _prepare_url(self, url: str) -> str:
         """强制启用 https 录制：部分平台返回的 http CDN 地址易被劫持/拦截，改写为 https。"""
-        if bool(self._settings.get("force_https")) and url.lower().startswith("http://"):
+        if bool(self._get("force_https")) and url.lower().startswith("http://"):
             return "https://" + url[len("http://"):]
         return url
 
@@ -504,7 +513,7 @@ class Recorder:
                 row.file_path = rel.as_posix()
                 row.size = self._file_size(mp4_path)
                 await s.commit()
-        if bool(self._settings.get("delete_original_after_convert")):
+        if bool(self._get("delete_original_after_convert")):
             with contextlib.suppress(OSError):
                 out_path.unlink()
         logger.info("房间 #{} 转封装完成: {}", self.room_id, mp4_path.name)
@@ -512,7 +521,7 @@ class Recorder:
 
     def _spawn_after_script(self, file_path: Path) -> None:
         """录制完成后执行自定义脚本（后台运行，600s 超时保护）。"""
-        template = str(self._settings.get("script_after_cmd") or "")
+        template = str(self._get("script_after_cmd") or "")
         if not template.strip():
             return
         command = template
@@ -587,11 +596,11 @@ class Recorder:
         if referer:
             headers += f"Referer: {referer}\r\n"
         # 输出容器二选一；仅音频（清晰度选“仅音频”）时扩展名与封装由 audio_format 决定
-        output_format = str(self._settings.get("output_format"))
+        output_format = str(self._get("output_format"))
         if output_format not in ("mp4", "flv"):
             output_format = "mp4"
         audio_only = self._effective_quality() == "audio"
-        audio_fmt = str(self._settings.get("audio_format") or "auto")
+        audio_fmt = str(self._get("audio_format") or "auto")
         if audio_fmt not in self._AUDIO_MUXERS:
             audio_fmt = "auto"
         cmd = [
@@ -686,18 +695,32 @@ class Recorder:
     def _build_output_path(self, stream) -> tuple[Path, Path]:
         if self._effective_quality() == "audio":
             # 仅音频：扩展名跟随音频格式（auto/m4a 输出 M4A）
-            fmt = str(self._settings.get("audio_format") or "auto")
+            fmt = str(self._get("audio_format") or "auto")
             ext = self._AUDIO_EXTS.get(fmt, "m4a")
         else:
-            ext = str(self._settings.get("output_format"))
+            ext = str(self._get("output_format"))
             if ext not in ("mp4", "flv"):
                 ext = "mp4"
-        start = utcnow()
+        # 文件名用本地时间（旧版误用 UTC，目录名会差时区）
+        local = time.localtime(time.time())
+        info = get_platform(self._platform)
         mapping = {
             "platform": sanitize_component(self._platform, 40),
+            "platform_name": sanitize_component(info.name if info else self._platform, 40),
             "anchor": sanitize_component(self._check.anchor_name or getattr(stream, "anchor_name", ""), 60),
             "title": sanitize_component(self._check.title or getattr(stream, "title", ""), 80),
-            "datetime": start.strftime("%Y%m%d_%H%M%S"),
+            "remark": sanitize_component(getattr(self, "_room_remark", "") or "", 60),
+            "room_id": str(self.room_id),
+            "session_id": str(self.session_id or ""),
+            "datetime": time.strftime("%Y%m%d_%H%M%S", local),
+            "date": time.strftime("%Y%m%d", local),
+            "time": time.strftime("%H%M%S", local),
+            "year": time.strftime("%Y", local),
+            "month": time.strftime("%m", local),
+            "day": time.strftime("%d", local),
+            "hour": time.strftime("%H", local),
+            "minute": time.strftime("%M", local),
+            "second": time.strftime("%S", local),
             "quality": sanitize_component(getattr(stream, "quality", "") or "", 8),
         }
         rendered = str(self._settings.get("file_template"))

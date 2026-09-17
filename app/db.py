@@ -33,6 +33,13 @@ async def init_db() -> None:
     SessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 轻量迁移：旧库缺 overrides 列时补齐（create_all 不会修改已存在的表）
+        def _add_overrides_column(sync_conn):
+            from sqlalchemy import inspect, text
+            cols = {c["name"] for c in inspect(sync_conn).get_columns("rooms")}
+            if "overrides" not in cols:
+                sync_conn.execute(text("ALTER TABLE rooms ADD COLUMN overrides JSON DEFAULT '{}'"))
+        await conn.run_sync(_add_overrides_column)
 
 
 async def dispose_db() -> None:

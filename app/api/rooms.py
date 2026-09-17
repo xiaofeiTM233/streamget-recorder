@@ -3,11 +3,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 
+from ..core.events import bus
 from ..core.monitor import MonitorError, check_once
 from ..db import session_factory
 from ..models import Room
 from ..platforms import detect_platform, get_platform
-from ..schemas import BatchRoomToggle, RoomCreate, RoomUpdate, validate_quality
+from ..schemas import BatchRoomToggle, RoomCreate, RoomUpdate, validate_overrides, validate_quality
 from ..utils import iso_utc, utcnow
 from .deps import get_state
 
@@ -25,6 +26,7 @@ def room_out(room: Room, manager) -> dict:
         "remark": room.remark,
         "quality": room.quality,
         "check_interval": room.check_interval,
+        "overrides": dict(room.overrides or {}),
         "has_cookie": bool(room.cookie),
         "enabled": room.enabled,
         "status": room.status if room.enabled else "disabled",
@@ -78,6 +80,7 @@ async def create_room(payload: RoomCreate, request: Request):
             check_interval=payload.check_interval,
             cookie=payload.cookie or "",
             remark=payload.remark or "",
+            overrides=validate_overrides(payload.overrides),
             enabled=payload.enabled,
         )
         s.add(room)
@@ -105,6 +108,9 @@ async def update_room(room_id: int, payload: RoomUpdate, request: Request):
             room.quality = validate_quality(payload.quality) if payload.quality else ""
         if "check_interval" in provided:
             room.check_interval = payload.check_interval  # 显式 null = 跟随全局
+        if "overrides" in provided:
+            # 显式提交：null/空 dict = 清空全部覆盖，恢复跟随全局
+            room.overrides = validate_overrides(payload.overrides)
         if payload.cookie is not None:
             room.cookie = payload.cookie  # 空串 = 删除 Cookie
         if "remark" in provided:
@@ -176,6 +182,15 @@ async def check_room_now(room_id: int, request: Request):
     try:
         check = await check_once(room.platform, room.room_url, room.cookie or None, proxy)
     except MonitorError as exc:
+        # 手动检测失败：与轮询路径一致，标记错误状态供页面展示
+        factory = session_factory()
+        async with factory() as s:
+            db_room = await s.get(Room, room_id)
+            if db_room is not None:
+                db_room.status = "error"
+                db_room.status_msg = f"检测失败：{exc}"[:250]
+                await s.commit()
+        bus.publish("room_status", room_id=room_id, status="error", status_msg=f"检测失败：{exc}"[:250])
         raise HTTPException(status_code=502, detail=f"检测失败：{exc}")
     factory = session_factory()
     async with factory() as s:
@@ -184,11 +199,29 @@ async def check_room_now(room_id: int, request: Request):
             if check.anchor_name and check.anchor_name != db_room.anchor_name:
                 db_room.anchor_name = check.anchor_name
             db_room.last_check_at = utcnow()
+            # 检测成功：清除旧的错误状态（未开播回 idle；开播后由录制器标记 recording）
+            db_room.status = "idle"
+            db_room.status_msg = ""
             await s.commit()
+    bus.publish("room_status", room_id=room_id, status="idle", status_msg="", is_live=check.is_live)
     started = False
     if check.is_live and room.enabled:
         recorder = await state.manager.start(room, check)
         started = recorder is not None  # 并发上限已满时为 False，调度器稍后会自动重试
+        if not started:
+            factory = session_factory()
+            async with factory() as s:
+                db_room = await s.get(Room, room_id)
+                if db_room is not None:
+                    db_room.status = "error"
+                    db_room.status_msg = "并发录制数已达上限，等待空位后自动重试"
+                    await s.commit()
+            bus.publish(
+                "room_status",
+                room_id=room_id,
+                status="error",
+                status_msg="并发录制数已达上限，等待空位后自动重试",
+            )
     return {
         "is_live": check.is_live,
         "started": started,

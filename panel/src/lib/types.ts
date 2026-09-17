@@ -2,6 +2,23 @@
 
 /** 与后端 API 契约对应的类型定义。 */
 
+/** 房间级设置覆盖：键为全局设置名，未出现的键跟随全局。 */
+export type RoomOverrides = Partial<{
+  output_format: "mp4" | "flv";
+  audio_format: "auto" | "aac" | "m4a" | "mp3";
+  stream_type: "auto" | "flv" | "hls";
+  segment_enabled: boolean;
+  segment_seconds: number;
+  max_session_hours: number;
+  force_https: boolean;
+  flv_direct_download: boolean;
+  auto_convert_mp4: boolean;
+  delete_original_after_convert: boolean;
+  write_time_subtitle: boolean;
+  run_script_after: boolean;
+  script_after_cmd: string;
+}>;
+
 export interface RoomOut {
   id: number;
   platform: string;
@@ -11,6 +28,7 @@ export interface RoomOut {
   remark: string;
   quality: string;
   check_interval: number | null;
+  overrides: RoomOverrides;
   has_cookie: boolean;
   enabled: boolean;
   status: "idle" | "recording" | "error" | "disabled";
@@ -132,6 +150,7 @@ export interface RoomPayload {
   cookie?: string | null;
   remark?: string | null;
   enabled?: boolean;
+  overrides?: RoomOverrides | null;
 }
 
 /** 清晰度代码 → 中文显示名（存储值仍为英文代码）。audio = 仅录制音频。 */

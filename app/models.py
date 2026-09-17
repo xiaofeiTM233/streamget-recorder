@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from .utils import utcnow
@@ -23,6 +23,8 @@ class Room(Base):
     quality: Mapped[str] = mapped_column(String(8), default="OD")
     check_interval: Mapped[int | None] = mapped_column(Integer, default=None)  # None=用全局
     cookie: Mapped[str] = mapped_column(Text, default="")
+    # 房间级设置覆盖（JSON dict），键见 schemas.OVERRIDE_KEYS；空 dict = 全部跟随全局
+    overrides: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # idle=监控中未开播 | recording=录制中 | error=异常 | disabled=已停用
     status: Mapped[str] = mapped_column(String(16), default="idle")
