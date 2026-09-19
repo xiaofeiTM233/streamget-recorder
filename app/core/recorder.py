@@ -25,6 +25,7 @@ from ..settings_service import SettingsService
 from ..store import store
 from ..utils import sanitize_component, utcnow
 from .events import bus
+from .http_pool import get_client
 from .monitor import CheckResult, MonitorError, RoomMonitor
 
 FFMPEG_UA = (
@@ -215,8 +216,8 @@ class Recorder:
 
         async def _post() -> None:
             try:
-                async with httpx.AsyncClient(timeout=8, verify=False) as client:
-                    await client.post(url, json=payload)
+                client = await get_client(http2=False)
+                await client.post(url, json=payload, timeout=8)
             except Exception as exc:
                 logger.warning("房间 #{} webhook 通知失败（{}）: {}", self.room_id, url, exc)
 
@@ -388,37 +389,37 @@ class Recorder:
         code = 0
         logger.info("房间 #{} 开始分段（下载器直连）: {}", self.room_id, out_path.name)
         try:
-            async with httpx.AsyncClient(
+            client = await get_client(self._download_proxy(), http2=False)
+            async with client.stream(
+                "GET",
+                url,
                 headers=headers,
-                proxy=self._download_proxy(),
-                verify=False,
                 follow_redirects=True,
                 timeout=httpx.Timeout(connect=15.0, read=30.0, write=30.0, pool=30.0),
-            ) as client:
-                async with client.stream("GET", url) as resp:
-                    resp.raise_for_status()
-                    with out_path.open("wb") as f:
-                        async for chunk in resp.aiter_bytes(65536):
-                            if self._stop_requested.is_set():
-                                break
-                            f.write(chunk)
-                            size += len(chunk)
-                            elapsed = time.monotonic() - start
-                            if elapsed - last_publish >= 2.0:
-                                last_publish = elapsed
-                                self.progress = {
-                                    "session_id": self.session_id,
-                                    "file": rel_path.as_posix(),
-                                    "duration": round(elapsed, 1),
-                                    "size": size,
-                                    "bitrate": f"{size * 8 / max(elapsed, 1e-6) / 1000:.0f} kbps",
-                                }
-                                bus.publish("recording_progress", room_id=self.room_id, **self.progress)
-                            if segment_seconds > 0 and elapsed >= segment_seconds:
-                                logger.info(
-                                    "房间 #{} 达到分段时间（{} 秒），切换新分段", self.room_id, segment_seconds
-                                )
-                                break
+            ) as resp:
+                resp.raise_for_status()
+                with out_path.open("wb") as f:
+                    async for chunk in resp.aiter_bytes(65536):
+                        if self._stop_requested.is_set():
+                            break
+                        f.write(chunk)
+                        size += len(chunk)
+                        elapsed = time.monotonic() - start
+                        if elapsed - last_publish >= 2.0:
+                            last_publish = elapsed
+                            self.progress = {
+                                "session_id": self.session_id,
+                                "file": rel_path.as_posix(),
+                                "duration": round(elapsed, 1),
+                                "size": size,
+                                "bitrate": f"{size * 8 / max(elapsed, 1e-6) / 1000:.0f} kbps",
+                            }
+                            bus.publish("recording_progress", room_id=self.room_id, **self.progress)
+                        if segment_seconds > 0 and elapsed >= segment_seconds:
+                            logger.info(
+                                "房间 #{} 达到分段时间（{} 秒），切换新分段", self.room_id, segment_seconds
+                            )
+                            break
         except httpx.HTTPStatusError as exc:
             self._last_error = f"下载器拉流失败：HTTP {exc.response.status_code}"
             code = 1

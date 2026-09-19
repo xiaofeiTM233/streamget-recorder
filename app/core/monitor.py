@@ -3,20 +3,22 @@
 streamget 的网络层（async_req）在出错时不抛异常而是把异常文本/空串当响应返回，
 平台代码随后 json.loads 必然报 JSONDecodeError，真实原因（URL、实际返回内容）
 在库内被丢弃。因此这里做了两件事：
-1. _instrument_streamget_requests：包装各平台的 async_req，在源头把可疑返回记入日志，
-   并额外探测一次 HTTP 状态码（空响应/错误页也能拿到状态码）；
+1. _instrument_streamget_requests：用 http_pool 共享连接池整体替换各平台的
+   async_req（库内原实现每次请求新建 AsyncClient，连接即建即断导致系统连接数
+   偏高），并在源头把可疑返回记入日志、额外探测一次 HTTP 状态码；
 2. MonitorError 直接附上原始响应内容与状态码，方便定位。
 """
 
 import re
 import sys
-import httpx
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
+
 from loguru import logger
 
 from ..platforms import CUSTOM_KEY, get_platform
+from . import http_pool
 
 
 class MonitorError(Exception):
@@ -131,15 +133,15 @@ class RoomMonitor:
 async def _probe_stream_url(url: str) -> bool:
     """直链平台探测：m3u8 含 ENDLIST 视为点播（未开播），可达即视为在线。"""
     try:
-        async with httpx.AsyncClient(timeout=8, verify=False, follow_redirects=True) as client:
-            async with client.stream("GET", url) as resp:
-                if resp.status_code != 200:
-                    return False
-                if ".m3u8" in url.split("?")[0]:
-                    text = (await resp.aread())[:65536].decode("utf-8", "replace")
-                    return "#EXT-X-ENDLIST" not in text
-                await resp.aread()
-                return True
+        client = await http_pool.get_client(http2=False)
+        async with client.stream("GET", url, follow_redirects=True, timeout=8) as resp:
+            if resp.status_code != 200:
+                return False
+            if ".m3u8" in url.split("?")[0]:
+                text = (await resp.aread())[:65536].decode("utf-8", "replace")
+                return "#EXT-X-ENDLIST" not in text
+            await resp.aread()
+            return True
     except Exception as exc:
         logger.debug("直链探测失败 {}: {}", url, exc)
         return False
@@ -176,34 +178,71 @@ def _suspicious_snippet(result: str) -> str:
 
 async def _probe_status(url: str, proxy_addr: str | None) -> int | None:
     """轻量探测一次 HTTP 状态码（HEAD，不下载 body）。空响应/错误页也能拿到状态码。"""
-    import httpx as _httpx
-
     try:
-        async with _httpx.AsyncClient(proxy=proxy_addr, timeout=6) as client:
-            response = await client.head(url, follow_redirects=True)
-            return response.status_code
+        client = await http_pool.get_client(proxy_addr, http2=False)
+        response = await client.head(url, follow_redirects=True, timeout=6)
+        return response.status_code
     except Exception:
         return None  # 网络不通/超时，无状态码
 
 
 def _instrument_streamget_requests() -> int:
-    """包装 streamget 各平台引用的 async_req，装上诊断日志 + 状态码探测。
+    """用共享连接池整体替换 streamget 各平台引用的 async_req，并装上诊断日志。
 
-    async_req 网络异常时返回 str(e) 而不抛错，平台代码 json.loads 随即抛
-    JSONDecodeError 且丢失原始响应；这里不改行为，只在源头把可疑内容与
-    状态码记入日志，并暂存本次检测上下文供错误消息展示。
+    库内原实现每次请求都新建 httpx.AsyncClient（连接即建即断，TLS 握手频繁，
+    TIME_WAIT 堆积导致系统连接数升高）。替换为 http_pool 共享客户端实现，
+    语义与原实现保持一致：
+    - 网络异常不抛出，把异常文本当响应返回（平台代码的 json.loads 失败路径依赖此行为）；
+    - 不持久化 Cookie（原实现每次新建客户端，Cookie 逐请求隔离）；
+    - 可疑响应（空串/错误页）记入日志并探测一次状态码，暂存进本次检测上下文。
     """
     import streamget.requests.async_http as http_mod
+    from streamget.utils import handle_proxy_addr
 
-    original = getattr(http_mod, "async_req")
-    if getattr(original, "_recorder_diagnostic", False):
-        return 0  # 已包装，防重复
+    if getattr(http_mod.async_req, "_recorder_pooled", False):
+        return 0  # 已替换，防重复
 
-    async def diagnostic_req(url: str, *args, **kwargs):
-        result = await original(url, *args, **kwargs)
+    original = http_mod.async_req
+
+    async def pooled_async_req(
+        url: str,
+        proxy_addr: str | None = None,
+        headers: dict | None = None,
+        data: dict | bytes | None = None,
+        json_data: dict | list | None = None,
+        timeout: int = 20,
+        redirect_url: bool = False,
+        return_cookies: bool = False,
+        include_cookies: bool = False,
+        verify: bool = False,
+        http2: bool = True,
+    ):
+        if headers is None:
+            headers = {}
+        client = None
+        try:
+            proxy = handle_proxy_addr(proxy_addr)
+            client = await http_pool.get_client(proxy, verify=verify, http2=http2)
+            if data or json_data:
+                response = await client.post(url, data=data, json=json_data, headers=headers, timeout=timeout)
+            else:
+                response = await client.get(url, headers=headers, follow_redirects=True, timeout=timeout)
+            if redirect_url:
+                result = str(response.url)
+            elif return_cookies:
+                cookies_dict = dict(response.cookies.items())
+                result = (response.text, cookies_dict) if include_cookies else cookies_dict
+            else:
+                result = response.text
+        except Exception as e:
+            result = str(e)
+        else:
+            if client is not None:
+                client.cookies.clear()  # 不持久化 Cookie，保持原实现逐请求隔离的语义
+
+        # ---- 诊断：可疑响应记日志 + 探测状态码，暂存进本次检测上下文 ----
         if _is_suspicious(result):
-            proxy = kwargs.get("proxy_addr")
-            status = await _probe_status(url, proxy)
+            status = await _probe_status(url, proxy_addr)
             snippet = _suspicious_snippet(result)
             sc = f"{status}" if status is not None else "-"
             logger.warning("平台接口返回异常内容，状态码 {}：{} → {!r}", sc, url, snippet)
@@ -212,13 +251,13 @@ def _instrument_streamget_requests() -> int:
                 bad.append({"url": url, "text": snippet, "status": status})
         return result
 
-    diagnostic_req._recorder_diagnostic = True  # type: ignore[attr-defined]
-    http_mod.async_req = diagnostic_req
+    pooled_async_req._recorder_pooled = True  # type: ignore[attr-defined]
+    http_mod.async_req = pooled_async_req
     patched = 0
     for name, mod in list(sys.modules.items()):
         # 平台模块以 from-import 方式持有 async_req 的，逐个替换引用
         if name.startswith("streamget.platforms") and getattr(mod, "async_req", None) is original:
-            mod.async_req = diagnostic_req
+            mod.async_req = pooled_async_req
             patched += 1
     return patched
 

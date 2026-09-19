@@ -18,6 +18,7 @@ from app.__version__ import __version__
 from app.api import api_router, ws_router
 from app.config import config
 from app.core.events import bus
+from app.core.http_pool import aclose_all as close_http_pool
 from app.core.manager import RecorderManager
 from app.core.scheduler import PollingScheduler
 from app.log import log_buffer, setup_logging
@@ -114,6 +115,7 @@ async def lifespan(app: FastAPI):
     log_buffer.attach(lambda line: None)
     await scheduler.stop()
     await manager.stop_all()
+    await close_http_pool()  # 关闭共享 HTTP 连接池
     logger.info("服务已退出")
 
 
