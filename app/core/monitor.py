@@ -89,7 +89,17 @@ class RoomMonitor:
         # 库内键名不统一：B 站用 live_status，其余平台用 is_live
         raw_is_live = data.get("is_live", data.get("live_status"))
         if raw_is_live is None:
-            raise MonitorError(f"接口缺少开播状态字段: {str(data)[:120]}")
+            # 抖音/TikTok 等平台返回的是原始接口数据，不含 is_live/live_status
+            # （抖音用 status：2=直播中，4=未开播）。与 StreamCap 一致：交给
+            # fetch_stream_url 按平台自身逻辑判定开播状态。
+            try:
+                stream = await self._live.fetch_stream_url(data, video_quality="OD")
+            except Exception as exc:
+                raise MonitorError(self._explain_error(exc)) from exc
+            if isinstance(stream, dict):
+                raw_is_live = bool(stream.get("is_live"))
+            else:
+                raw_is_live = bool(getattr(stream, "is_live", False))
         return CheckResult(
             is_live=bool(raw_is_live),
             anchor_name=str(data.get("anchor_name") or ""),
@@ -120,7 +130,7 @@ class RoomMonitor:
         except Exception as exc:
             raise MonitorError(self._explain_error(exc)) from exc
         if isinstance(stream, dict):
-            from streamget import wrap_stream
+            from streamget.data import wrap_stream
 
             stream = wrap_stream(stream)
         if not getattr(stream, "record_url", None):
@@ -252,12 +262,41 @@ def _instrument_streamget_requests() -> int:
         return result
 
     pooled_async_req._recorder_pooled = True  # type: ignore[attr-defined]
+
+    # get_response_status 同样每次新建客户端，一并池化（语义一致：失败返回 False）
+    original_grs = getattr(http_mod, "get_response_status", None)
+
+    async def pooled_get_response_status(
+        url: str,
+        proxy_addr: str | None = None,
+        headers: dict | None = None,
+        timeout: int = 10,
+        verify: bool = False,
+        http2: bool = True,
+    ) -> int:
+        try:
+            proxy = handle_proxy_addr(proxy_addr)
+            client = await http_pool.get_client(proxy, verify=verify, http2=http2)
+            response = await client.head(url, headers=headers, follow_redirects=True, timeout=timeout)
+            return response.status_code
+        except Exception as exc:
+            logger.debug("HEAD 探测失败 {}: {}", url, exc)
+        return False
+
+    pooled_get_response_status._recorder_pooled = True  # type: ignore[attr-defined]
     http_mod.async_req = pooled_async_req
+    if original_grs is not None:
+        http_mod.get_response_status = pooled_get_response_status
     patched = 0
     for name, mod in list(sys.modules.items()):
-        # 平台模块以 from-import 方式持有 async_req 的，逐个替换引用
-        if name.startswith("streamget.platforms") and getattr(mod, "async_req", None) is original:
+        # 平台模块以 from-import 方式持有引用的，逐个替换
+        if not name.startswith("streamget.platforms"):
+            continue
+        if getattr(mod, "async_req", None) is original:
             mod.async_req = pooled_async_req
+            patched += 1
+        if original_grs is not None and getattr(mod, "get_response_status", None) is original_grs:
+            mod.get_response_status = pooled_get_response_status
             patched += 1
     return patched
 
