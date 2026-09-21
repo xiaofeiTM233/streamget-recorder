@@ -20,6 +20,7 @@ from app.config import config
 from app.core.events import bus
 from app.core.http_pool import aclose_all as close_http_pool
 from app.core.manager import RecorderManager
+from app.core.monitor import bind_settings as bind_monitor_settings
 from app.core.scheduler import PollingScheduler
 from app.log import log_buffer, setup_logging
 from app.settings_service import SettingsService
@@ -89,6 +90,10 @@ async def lifespan(app: FastAPI):
 
     settings_svc = SettingsService()
     await settings_svc.load()
+    bind_monitor_settings(settings_svc)
+    gql_endpoint = str(settings_svc.get("gql_endpoint") or "")
+    if gql_endpoint:
+        logger.info("GQL 接口已改写至自建反代端点 → {}", gql_endpoint)
 
     manager = RecorderManager(settings_svc)
     scheduler = PollingScheduler(manager, settings_svc)

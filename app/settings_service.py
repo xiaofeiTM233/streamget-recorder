@@ -40,6 +40,7 @@ DEFAULTS: dict[str, object] = {
     "ffmpeg_path": "ffmpeg",     # FFmpeg 可执行文件路径
     "ffmpeg_extra_args": "",     # FFmpeg 额外输出参数（追加在输出选项后），空 = 无
     "proxy_addr": "",            # 全局代理（检测与解析用；配合 proxy_record_platforms 也用于拉流），空 = 不使用
+    "gql_endpoint": "",          # 自建反代的 GQL 完整端点（如 https://gql.example.com/gql）：非空时把发往 gql.twitch.tv 的请求改写到此地址，代理仍按 proxy_addr 走；空 = 不改写
     "platform_credentials": "[]",  # 平台登录凭证 JSON 数组：[{"platform":"x","cookie":""}]，房间未配 Cookie 时的兜底（streamget 仅支持 Cookie 登录）
     "reconnect_backoff_max": 300,  # 断流/失败重试的最大退避（秒）
     "access_token": "",          # 访问令牌：非空时 REST 与 WS 均需携带（设置页可改，登录界面需填写一致令牌）

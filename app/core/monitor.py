@@ -11,6 +11,7 @@ streamget 的网络层（async_req）在出错时不抛异常而是把异常文�
 
 import re
 import sys
+import urllib.parse
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,6 +28,30 @@ class MonitorError(Exception):
 
 # 本次检测（task 上下文）内捕获的原始响应：{url, text}，JSONDecodeError 时直接附进错误消息
 _bad_responses: ContextVar[list[dict]] = ContextVar("recorder_bad_responses", default=None)
+
+
+# ---------- 自建反代端点改写 ----------
+# 部分平台接口可以走用户自建的反代（绕开公共端点的风控）。命中下表 host 的请求整体替换为
+# 设置里配的完整端点 URL；代理照常按全局 proxy_addr 走，如何路由由用户自己决定。
+_ENDPOINT_REWRITES: dict[str, str] = {"gql.twitch.tv": "gql_endpoint"}
+_settings_ref: object | None = None
+
+
+def bind_settings(settings) -> None:
+    """注入设置服务，供出站请求改写读取最新配置。仅启动时调用一次。"""
+    global _settings_ref
+    _settings_ref = settings
+
+
+def _apply_endpoint_rewrite(url: str) -> str:
+    """把命中改写表的请求换成自建反代端点；未配置或不命中则原样返回。"""
+    if _settings_ref is None:
+        return url
+    key = _ENDPOINT_REWRITES.get(urllib.parse.urlsplit(url).netloc.lower())
+    if key is None:
+        return url
+    target = str(_settings_ref.get(key) or "").strip()  # type: ignore[attr-defined]
+    return target or url
 
 
 @dataclass
@@ -229,6 +254,7 @@ def _instrument_streamget_requests() -> int:
     ):
         if headers is None:
             headers = {}
+        url = _apply_endpoint_rewrite(url)
         client = None
         try:
             proxy = handle_proxy_addr(proxy_addr)

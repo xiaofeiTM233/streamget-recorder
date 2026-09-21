@@ -49,6 +49,7 @@ const TEXT_FIELDS = new Set([
   "ffmpeg_path",
   "ffmpeg_extra_args",
   "proxy_addr",
+  "gql_endpoint",
   "script_after_cmd",
   "webhook_url",
   "check_interval",
@@ -307,6 +308,23 @@ export default function SettingsPage() {
                   >
                     <Input
                       placeholder="http://127.0.0.1:7890"
+                      onBlur={() => flushAutoSave()}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={16}>
+                  <Form.Item
+                    name="gql_endpoint"
+                    label="TwitchGQL 反代端点"
+                    tooltip={
+                      "自建反向代理的完整请求地址，非空时发往 gql.twitch.tv 的请求整体改写到此地址。" +
+                      "该请求是否走代理由上方“代理地址”统一决定，具体路由自行配置。" +
+                      "端点用你自己域名的正常证书即可，无需把 hosts 指向反代 IP。留空 = 直连官方。" +
+                      "只影响接口调用，拉流仍走 usher/CDN 与“代理录制平台”的设置。"
+                    }
+                  >
+                    <Input
+                      placeholder="https://gql.twitch.com/gql"
                       onBlur={() => flushAutoSave()}
                     />
                   </Form.Item>
