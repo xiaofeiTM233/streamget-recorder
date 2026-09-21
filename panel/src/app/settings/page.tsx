@@ -179,10 +179,15 @@ export default function SettingsPage() {
                   <Form.Item
                     name="reconnect_backoff_max"
                     label="重连最大退避（秒）"
-                    tooltip="断流/失败后的重试间隔指数增长，此为上限"
+                    tooltip={
+                      "失败后重试间隔按 5/10/20/40… 指数增长，此值为上限。" +
+                      "注意它只是上限：前 3 次固定 5/10/20 秒，不受此值影响。" +
+                      "值越大，一次会话能扛住的接口故障时长越长（配合“连续失败上限”计算）；" +
+                      "值过小会让相邻两次重试挨得太近，加重平台风控，0 = 不额外等待。"
+                    }
                     rules={[{ required: true, message: "必填" }]}
                   >
-                    <InputNumber min={30} max={3600} style={{ width: "100%" }} />
+                    <InputNumber min={0} max={3600} style={{ width: "100%" }} />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12}>
