@@ -6,6 +6,7 @@ import {
   EditOutlined,
   PlusOutlined,
   ReloadOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
 import {
   App as AntApp,
@@ -345,9 +346,13 @@ export default function RoomsPage() {
                     }}
                   >
                     <Tooltip title="停止录制">
-                      <Button type="text" size="small" danger loading={stop.isPending}>
-                        停止
-                      </Button>
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        icon={<StopOutlined style={{ fontSize: 16 }} />}
+                        loading={stop.isPending}
+                      />
                     </Tooltip>
                   </Popconfirm>
                 )}
