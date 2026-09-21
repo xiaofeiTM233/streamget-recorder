@@ -34,6 +34,16 @@ FFMPEG_UA = (
 )
 _TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _BITRATE_RE = re.compile(r"bitrate=\s*([\d.]+)\s*([kmg]?)bits/s")
+# FFmpeg 自身的告警/错误行：这些是断流与画面缺口的第一手线索，不能丢
+_FFMPEG_WARN_RE = re.compile(
+    r"(?i)(failed to|failed reading|error(:| |retrieving|while|occurred)"
+    r"|server returned|http error|invalid data found|stream error"
+    r"|timed out|timeout|connection (?:reset|refused|closed|timed)"
+    r"|network is unreachable|non[- ]?monoton|missing dts|increasing dts|reconnect"
+    r"|previous line is repeated)"
+)
+_FFMPEG_WARN_CAP = 40  # 单段逐条输出的上限，超出只计数，避免刷屏埋掉其他日志
+_GAP_WARN_SECONDS = 15.0  # 分段"历时 − 录到时长"的告警阈值（FFmpeg 起进程+取整本身有数秒误差）
 _MAX_CONSECUTIVE_FAILURES = 10  # 连续失败上限：结束后交还轮询调度器处理
 _GRACEFUL_STOP_TIMEOUT = 10.0  # 等 ffmpeg 收到 'q' 后自行收尾的秒数
 
@@ -254,11 +264,15 @@ class Recorder:
         if pre is None:
             return -1
         out_path, rel_path, file_id = pre
+        # 墙钟历时：与录到的媒体时长相减即为本段画面缺口，日志只记后者是看不出丢帧的
+        started = time.monotonic()
         if self._use_direct_download(stream.record_url):
             code, duration, bitrate = await self._download_core(stream.record_url, out_path, rel_path)
         else:
             code, duration, bitrate = await self._ffmpeg_core(stream, out_path, rel_path, file_id)
-        await self._segment_epilogue(file_id, out_path, rel_path, code, duration, bitrate)
+        await self._segment_epilogue(
+            file_id, out_path, rel_path, code, duration, bitrate, time.monotonic() - started
+        )
         return code
 
     async def _segment_prologue(self, stream) -> tuple[Path, Path, int] | None:
@@ -282,8 +296,9 @@ class Recorder:
         return out_path, rel_path, file_id
 
     async def _segment_epilogue(self, file_id: int, out_path: Path, rel_path: Path,
-                                code: int, duration: float, bitrate: str) -> None:
-        """分段收尾：落库、可选转 MP4 / 执行录后脚本、更新进度快照。"""
+                                code: int, duration: float, bitrate: str,
+                                span: float = 0.0) -> None:
+        """分段收尾：落库、缺口判定、可选转 MP4 / 执行录后脚本、更新进度快照。"""
         status = "finished" if code == 0 else "error"
         await self._finalize_file(file_id, out_path, duration, status)
         final_path = out_path
@@ -307,15 +322,30 @@ class Recorder:
             "size": self._file_size(final_path),
             "bitrate": bitrate,
         }
+        size_mb = self._file_size(out_path) / 1048576
+        # 实测码率：文件体积对得上录到时长才说明内容没被悄悄吞掉
+        measured = size_mb * 8 / duration if duration > 0 else 0.0
         logger.info(
-            "房间 #{} 分段结束: {}（退出码 {}，时长 {:.0f}s，大小 {:.1f} MB）",
-            self.room_id, out_path.name, code, duration, self._file_size(out_path) / 1048576,
+            "房间 #{} 分段结束: {}（退出码 {}，录到 {:.0f}s，历时 {:.0f}s，大小 {:.1f} MB，实测 {:.2f} Mbps）",
+            self.room_id, out_path.name, code, duration, span, size_mb, measured,
         )
+        gap = span - duration
+        if gap > _GAP_WARN_SECONDS:
+            logger.warning(
+                "房间 #{} 本段缺口 {:.0f}s（历时 {:.0f}s − 录到 {:.0f}s）：{} —— "
+                "文件时间轴被拉直，播放时表现为画面突然向前跳，缺口内容不在文件里",
+                self.room_id, gap, span, duration, out_path.name,
+            )
 
     async def _ffmpeg_core(self, stream, out_path: Path, rel_path: Path, file_id: int) -> tuple[int, float, str]:
         """FFmpeg 直拉录制一个分段。返回 (退出码, 时长, 码率)。"""
         cmd = self._build_ffmpeg_cmd(stream.record_url, out_path)
-        logger.info("房间 #{} 开始分段: {}", self.room_id, out_path.name)
+        # 只记 host+path，不带 token：清晰度就写在变体路径里，码率塌了要能看出拉到了哪一路
+        src = urllib.parse.urlparse(stream.record_url)
+        logger.info(
+            "房间 #{} 开始分段: {}（源 {}{}）",
+            self.room_id, out_path.name, src.netloc, src.path[:90],
+        )
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -331,7 +361,7 @@ class Recorder:
             self._stop_requested.set()
             return -1, 0.0, ""
         self._proc = proc
-        stats = {"duration": 0.0, "bitrate": ""}
+        stats = {"duration": 0.0, "bitrate": "", "warn_lines": 0}
         reader = asyncio.create_task(self._read_stderr(proc, rel_path, out_path, stats))
         # 时间字幕：与录制进程同生命周期，每秒一条 SRT（仅音频时无画面，不生成）
         subtitle_task = None
@@ -362,7 +392,14 @@ class Recorder:
                 subtitle_task.cancel()
                 pending.append(subtitle_task)
             await asyncio.gather(*pending, return_exceptions=True)
-        return proc.returncode or 0, stats["duration"], stats["bitrate"]
+        if stats["warn_lines"]:
+            logger.warning(
+                "房间 #{} 本段 FFmpeg 告警 {} 条: {}",
+                self.room_id, stats["warn_lines"], out_path.name,
+            )
+        # returncode 为 None 表示没拿到结果（取消/超时路径），不能记成正常结束
+        code = proc.returncode if proc.returncode is not None else -1
+        return code, stats["duration"], stats["bitrate"]
 
     async def _download_core(self, url: str, out_path: Path, rel_path: Path) -> tuple[int, float, str]:
         """下载器直连录制一个分段：httpx 流式下载 FLV 写盘（延迟更低，规避 FFmpeg 对部分 FLV 流的兼容问题）。
@@ -637,7 +674,7 @@ class Recorder:
 
     async def _read_stderr(self, proc: asyncio.subprocess.Process, rel_path: Path,
                            out_path: Path, stats: dict) -> None:
-        """解析 FFmpeg 的 stats 输出，节流发布录制进度。"""
+        """解析 FFmpeg 的 stderr：抽取进度指标，并把 FFmpeg 自身的告警行落进日志。"""
         last_publish = 0.0
         buffer = ""
         assert proc.stderr is not None
@@ -646,16 +683,14 @@ class Recorder:
             if not chunk:
                 break
             buffer += chunk.decode("utf-8", "replace")
-            if len(buffer) > 65536:
+            # stats 行以 \r 分隔、日志行以 \n 分隔：统一后只消费完整行。
+            # 不重扫已处理内容，否则同一条告警会被反复上报。
+            lines = buffer.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            buffer = lines.pop()
+            if len(buffer) > 65536:  # 进程长期不换行时保底截断，避免积压涨内存
                 buffer = buffer[-8192:]
-            for piece in re.split(r"[\r\n]+", buffer):
-                m = _TIME_RE.search(piece)
-                if m:
-                    stats["duration"] = int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3])
-                m = _BITRATE_RE.search(piece)
-                if m:
-                    factor = {"k": 1, "m": 1000, "g": 1e6}.get(m[2].lower(), 1)
-                    stats["bitrate"] = f"{float(m[1]) * factor:.0f} kbps"
+            for line in lines:
+                self._consume_stderr_line(line, stats)
             now = time.monotonic()
             if stats["duration"] > 0 and now - last_publish >= 2.0:
                 last_publish = now
@@ -667,6 +702,30 @@ class Recorder:
                     "bitrate": stats["bitrate"],
                 }
                 bus.publish("recording_progress", room_id=self.room_id, **self.progress)
+        self._consume_stderr_line(buffer, stats)
+
+    def _consume_stderr_line(self, line: str, stats: dict) -> None:
+        """取一行的进度指标；命中告警特征的行原样落日志并计数。"""
+        line = line.strip()
+        if not line:
+            return
+        m = _TIME_RE.search(line)
+        if m:
+            stats["duration"] = int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3])
+        m = _BITRATE_RE.search(line)
+        if m:
+            factor = {"k": 1, "m": 1000, "g": 1e6}.get(m[2].lower(), 1)
+            stats["bitrate"] = f"{float(m[1]) * factor:.0f} kbps"
+        if not _FFMPEG_WARN_RE.search(line):
+            return
+        stats["warn_lines"] += 1
+        if stats["warn_lines"] <= _FFMPEG_WARN_CAP:
+            logger.warning("房间 #{} FFmpeg: {}", self.room_id, line[:300])
+        elif stats["warn_lines"] == _FFMPEG_WARN_CAP + 1:
+            logger.warning(
+                "房间 #{} FFmpeg 告警已超 {} 条，后续只计数不再逐条输出",
+                self.room_id, _FFMPEG_WARN_CAP,
+            )
 
     @staticmethod
     def _file_size(path: Path) -> int:
