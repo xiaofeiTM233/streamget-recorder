@@ -19,7 +19,7 @@ DEFAULTS: dict[str, object] = {
     "retention_days": 0,         # 录制文件保留天数：超期按磁盘文件时间自动清理（每小时检查一次），0 = 永久保留
     "webhook_url": "",           # 事件通知地址（POST JSON）：录制会话开始/结束时回调，留空不启用
     "quality": "OD",             # 录制清晰度：OD | UHD | HD | SD | LD | audio（仅音频）
-    "output_format": "mp4",      # 录制格式（容器）：mp4 | flv
+    "output_format": "auto",     # 录制容器：auto 跟随本次拉流地址后缀 | mkv
     "audio_format": "auto",      # 音频格式：auto 自动 | aac | m4a | mp3；录视频时 auto=跟随源、aac/mp3=转码，仅音频时 auto/m4a=M4A、aac=裸流、mp3=转码
     "stream_type": "auto",       # 拉流协议优先级：auto = 库自动 | flv | hls
     "segment_enabled": False,    # 分段录制是否开启
@@ -29,8 +29,6 @@ DEFAULTS: dict[str, object] = {
     "force_https": False,        # 强制启用 https 录制（http 流地址改写为 https）
     "flv_direct_download": False,  # FLV 源使用下载器直连录制（httpx 流式下载，低延迟；不支持 ffmpeg_extra_args）
     "proxy_record_platforms": "tiktok, soop, panda, winktv, flextv, popkontv, twitch, liveme, showroom, chzzk, shopee, youtube, lang",  # 默认使用代理录制的平台（逗号分隔的 key，FFmpeg 拉流走全局代理）
-    "auto_convert_mp4": False,   # 录制完成后转为 mp4（输出格式为 flv 时生效）
-    "delete_original_after_convert": False,  # 追加格式后删除原文件
     "write_time_subtitle": False,  # 生成时间字幕文件（每秒一条 SRT，正文为当时时间）
     "run_script_after": False,   # 录制完成后执行自定义脚本
     "script_after_cmd": "",      # 自定义脚本执行命令，占位符 {file} {filename} {title} {anchor} {platform} {session_id}
@@ -62,6 +60,7 @@ class SettingsService:
                 data = json.loads(self._path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     self._migrate_audio_format(data)
+                    self._migrate_output_format(data)
                     self._cache = data
                     return
             except (json.JSONDecodeError, OSError) as exc:
@@ -86,6 +85,14 @@ class SettingsService:
             data["audio_format"] = "mp3"
         else:  # copy/缺失 → 自动
             data["audio_format"] = "auto"
+
+    @staticmethod
+    def _migrate_output_format(data: dict) -> None:
+        """旧版固定 mp4/flv 改为 auto（跟随源），并清理已移除的转封装设置。"""
+        data.pop("auto_convert_mp4", None)
+        data.pop("delete_original_after_convert", None)
+        if data.get("output_format") in ("mp4", "flv"):
+            data["output_format"] = "auto"
 
     def get(self, key: str):
         if key not in DEFAULTS:

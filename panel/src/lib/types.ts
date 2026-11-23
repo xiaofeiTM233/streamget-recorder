@@ -12,7 +12,7 @@ export interface ConnectionConfig {
 
 /** 房间级设置覆盖：键为全局设置名，未出现的键跟随全局。 */
 export type RoomOverrides = Partial<{
-  output_format: "mp4" | "flv";
+  output_format: "auto" | "mkv";
   audio_format: "auto" | "aac" | "m4a" | "mp3";
   stream_type: "auto" | "flv" | "hls";
   segment_enabled: boolean;
@@ -20,8 +20,6 @@ export type RoomOverrides = Partial<{
   max_session_hours: number;
   force_https: boolean;
   flv_direct_download: boolean;
-  auto_convert_mp4: boolean;
-  delete_original_after_convert: boolean;
   write_time_subtitle: boolean;
   run_script_after: boolean;
   script_after_cmd: string;

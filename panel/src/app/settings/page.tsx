@@ -84,7 +84,7 @@ export default function SettingsPage() {
         ...rest,
         // 兼容旧版本：录制格式曾可存 “audio”，迁移为清晰度“仅音频”
         quality: output_format === "audio" ? "audio" : data.settings.quality,
-        output_format: output_format === "audio" ? "mp4" : output_format,
+        output_format: output_format === "audio" ? "auto" : output_format,
         proxy_record_platforms: String(proxy_record_platforms ?? "").split(",").filter(Boolean),
       });
       setCreds(parseCreds(data.settings.platform_credentials));
@@ -145,7 +145,7 @@ export default function SettingsPage() {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ output_format: "mp4", quality: "OD", check_interval: 60 }}
+        initialValues={{ output_format: "auto", quality: "OD", check_interval: 60 }}
         onValuesChange={handleValuesChange}
       >
         {/* 隐藏字段承载平台凭证 JSON，随表单一起保存 */}
@@ -206,13 +206,13 @@ export default function SettingsPage() {
                   <Form.Item
                     name="output_format"
                     label="录制格式"
-                    tooltip="mp4 通用；flv 兼容性最好；清晰度选“仅音频”时此项无效（输出由音频格式决定）"
+                    tooltip="自动跟随本次拉流地址后缀（FLV / HLS 转 TS / MP4）；MKV 通用性与容错更好；清晰度选“仅音频”时此项无效（输出由音频格式决定）"
                   >
                     <Radio.Group
                       disabled={quality === "audio"}
                       options={[
-                        { value: "mp4", label: "MP4" },
-                        { value: "flv", label: "FLV" },
+                        { value: "auto", label: "自动" },
+                        { value: "mkv", label: "MKV" },
                       ]}
                       optionType="button"
                     />
@@ -449,26 +449,6 @@ export default function SettingsPage() {
           <Col xs={24} xl={12} style={{ display: "flex" }}>
             <Card title="录制后处理" loading={isLoading} style={{ width: "100%" }}>
               <Row gutter={[12, 8]}>
-                <Col xs={24} sm={8}>
-                  <Form.Item
-                    name="auto_convert_mp4"
-                    label="转 MP4"
-                    valuePropName="checked"
-                    tooltip="输出格式为 FLV 时生效：录制结束后转封装（流拷贝，速度快）"
-                  >
-                    <Switch />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={8}>
-                  <Form.Item
-                    name="delete_original_after_convert"
-                    label="转换后删原文件"
-                    valuePropName="checked"
-                    tooltip="转换成功后删除原 FLV；关闭时原文件保留在磁盘"
-                  >
-                    <Switch />
-                  </Form.Item>
-                </Col>
                 <Col xs={24} sm={8}>
                   <Form.Item
                     name="write_time_subtitle"

@@ -493,8 +493,8 @@ export default function RoomsPage() {
                       allowClear
                       value={form.overrides.output_format}
                       options={[
-                        { value: "mp4", label: "MP4" },
-                        { value: "flv", label: "FLV" },
+                        { value: "auto", label: "自动" },
+                        { value: "mkv", label: "MKV" },
                       ]}
                       onChange={(v) => setOv("output_format", v)}
                     />
@@ -606,30 +606,6 @@ export default function RoomsPage() {
               label: "录制后处理",
               children: (
                 <Row gutter={[12, 8]}>
-                  <Col span={8}>
-                    <Select
-                      style={{ width: "100%" }}
-                      placeholder="转 MP4"
-                      allowClear
-                      value={boolVal(form.overrides.auto_convert_mp4)}
-                      options={BOOL_OPTS}
-                      onChange={(v) =>
-                        setOv("auto_convert_mp4", v === undefined ? undefined : v === "1")
-                      }
-                    />
-                  </Col>
-                  <Col span={8}>
-                    <Select
-                      style={{ width: "100%" }}
-                      placeholder="转换后删原文件"
-                      allowClear
-                      value={boolVal(form.overrides.delete_original_after_convert)}
-                      options={BOOL_OPTS}
-                      onChange={(v) =>
-                        setOv("delete_original_after_convert", v === undefined ? undefined : v === "1")
-                      }
-                    />
-                  </Col>
                   <Col span={8}>
                     <Select
                       style={{ width: "100%" }}

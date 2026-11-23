@@ -61,15 +61,19 @@ class RoomSettingsUpdate(BaseModel):
 def validate_quality(quality: str | None) -> str | None:
     if quality is None:
         return None
-    quality = quality.upper()
-    if quality not in QUALITIES:
-        raise ValueError(f"清晰度必须是 {'/'.join(QUALITIES)}")
-    return quality
+    # audio 为仅音频标记，不是清晰度代码，单独放行以免被大写化后判为非法
+    normalized = quality.strip()
+    if normalized.lower() == "audio":
+        return "audio"
+    normalized = normalized.upper()
+    if normalized not in QUALITIES:
+        raise ValueError(f"清晰度必须是 {'/'.join(QUALITIES)}/audio")
+    return normalized
 
 
 # 房间级可覆盖的设置键及其合法取值（枚举 tuple / 类型 bool/int/str）
 OVERRIDE_KEYS: dict[str, tuple | type] = {
-    "output_format": ("mp4", "flv"),
+    "output_format": ("auto", "mkv"),
     "audio_format": ("auto", "aac", "m4a", "mp3"),
     "stream_type": ("auto", "flv", "hls"),
     "segment_enabled": bool,
@@ -77,8 +81,6 @@ OVERRIDE_KEYS: dict[str, tuple | type] = {
     "max_session_hours": int,
     "force_https": bool,
     "flv_direct_download": bool,
-    "auto_convert_mp4": bool,
-    "delete_original_after_convert": bool,
     "write_time_subtitle": bool,
     "run_script_after": bool,
     "script_after_cmd": str,
