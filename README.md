@@ -41,7 +41,7 @@
 ### Windows 本机运行
 
 1. 安装 [uv](https://docs.astral.sh/uv/)、[FFmpeg](https://www.gyan.dev/ffmpeg/builds/)（加入 PATH）
-2. 双击 `start.bat`，浏览器自动打开 `http://127.0.0.1:8000`
+2. 双击 `start.bat`，浏览器自动打开面板（默认 `http://127.0.0.1:5477`）
 
 ### 单文件 exe
 
@@ -55,7 +55,7 @@ build.bat
 
 ```bash
 docker compose up -d
-# 浏览器访问 http://<主机IP>:8000
+# 浏览器访问 http://<主机IP>:5477
 ```
 
 ### 开发模式
@@ -63,9 +63,9 @@ docker compose up -d
 ```bash
 # 后端（recorder/ 目录）
 uv sync
-uv run python main.py            # http://127.0.0.1:8000
+uv run python main.py            # http://127.0.0.1:5477
 
-# 前端热更新（panel/ 目录，代理 /api 到 8000）
+# 前端热更新（panel/ 目录，代理 /api 到 5477）
 npm install
 npm run dev                      # http://localhost:3000
 
@@ -86,7 +86,7 @@ uv run python scripts/dev_record_test.py   # 用公开测试流完整跑一遍�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `RECORDER_HOST` | `127.0.0.1` | 监听地址；Docker 内已设为 `0.0.0.0` |
-| `RECORDER_PORT` | `8000` | 监听端口 |
+| `RECORDER_PORT` | `5477` | 监听端口；显式设置时优先于网页设置中的端口 |
 | `RECORDER_DATA_DIR` | `data` | 数据文件 / 录制 / 日志根目录 |
 | `RECORDER_LOG_LEVEL` | `INFO` | 日志级别 |
 
@@ -94,7 +94,7 @@ uv run python scripts/dev_record_test.py   # 用公开测试流完整跑一遍�
 
 在网页"设置"页修改，存于 `data/settings.json`，即时生效。按功能分组，完整键值见 [app/settings_service.py](app/settings_service.py) 的 `DEFAULTS`：
 
-- **常规录制**：检测时间、下播确认延迟、清晰度、录制 / 音频格式、拉流协议、保存路径模板（17 个占位符：`platform` `platform_name` `anchor` `title` `remark` `room_id` `session_id` `datetime` `date` `time` `year`~`second` `quality`，时间为本地时间）与保存目录
+- **常规录制**：服务端口（保存后需重启生效）、检测时间、下播确认延迟、清晰度、录制 / 音频格式、拉流协议、保存路径模板（17 个占位符：`platform` `platform_name` `anchor` `title` `remark` `room_id` `session_id` `datetime` `date` `time` `year`~`second` `quality`，时间为本地时间）与保存目录
 - **网络与通知**：全局代理、代理录制平台、强制 HTTPS、FLV 下载器直连、Webhook 地址
 - **录制限制**：分段（开关 + 秒数）、单场时长、磁盘阈值、连续失败上限、保留天数、并发上限
 - **录制后处理**：时间字幕、录后脚本、FFmpeg 路径与额外参数

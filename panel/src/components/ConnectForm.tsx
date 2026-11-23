@@ -22,7 +22,7 @@ export default function ConnectForm() {
 
   const defaultBase =
     config.baseUrl ||
-    (typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:8000");
+    (typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:5477");
 
   const onFinish = async (values: FormValues) => {
     setSubmitting(true);
@@ -92,7 +92,7 @@ export default function ConnectForm() {
                     new URL(value);
                     return Promise.resolve();
                   } catch {
-                    return Promise.reject(new Error("请填写有效的 URL，例如 http://127.0.0.1:8000"));
+                    return Promise.reject(new Error("请填写有效的 URL，例如 http://127.0.0.1:5477"));
                   }
                 },
               },
@@ -101,7 +101,7 @@ export default function ConnectForm() {
             <Input
               size="large"
               prefix={<LinkOutlined />}
-              placeholder="http://127.0.0.1:8000"
+              placeholder="http://127.0.0.1:5477"
               autoComplete="off"
             />
           </Form.Item>

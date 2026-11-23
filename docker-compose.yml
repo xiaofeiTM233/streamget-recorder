@@ -3,11 +3,11 @@ services:
     build: .
     container_name: streamget-recorder
     ports:
-      - "8000:8000"
+      - "5477:5477"
     environment:
       - TZ=Asia/Shanghai
       - RECORDER_HOST=0.0.0.0
-      - RECORDER_PORT=8000
+      - RECORDER_PORT=5477
       # 访问令牌在网页"设置 → 关于与令牌"中设置（存于 data/settings.json），无需环境变量
       # 代理（国际平台需要时取消注释）：
       # - http_proxy=http://host.docker.internal:7890

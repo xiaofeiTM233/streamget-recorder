@@ -52,6 +52,7 @@ const TEXT_FIELDS = new Set([
   "gql_endpoint",
   "script_after_cmd",
   "webhook_url",
+  "port",
   "check_interval",
   "end_confirm_delay",
   "reconnect_backoff_max",
@@ -145,7 +146,7 @@ export default function SettingsPage() {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ output_format: "auto", quality: "OD", check_interval: 60 }}
+        initialValues={{ port: 5477, output_format: "auto", quality: "OD", check_interval: 60 }}
         onValuesChange={handleValuesChange}
       >
         {/* 隐藏字段承载平台凭证 JSON，随表单一起保存 */}
@@ -156,7 +157,7 @@ export default function SettingsPage() {
           <Col xs={24} xl={12} style={{ display: "flex" }}>
             <Card title="常规录制" loading={isLoading} style={{ width: "100%" }}>
               <Row gutter={[12, 8]}>
-                <Col xs={24} sm={8}>
+                <Col xs={24} sm={6}>
                   <Form.Item
                     name="check_interval"
                     label="检测时间（秒）"
@@ -166,7 +167,7 @@ export default function SettingsPage() {
                     <InputNumber min={10} max={3600} style={{ width: "100%" }} />
                   </Form.Item>
                 </Col>
-                <Col xs={24} sm={8}>
+                <Col xs={24} sm={6}>
                   <Form.Item
                     name="end_confirm_delay"
                     label="下播确认延迟（秒）"
@@ -176,7 +177,7 @@ export default function SettingsPage() {
                     <InputNumber min={0} max={600} style={{ width: "100%" }} />
                   </Form.Item>
                 </Col>
-                <Col xs={24} sm={8}>
+                <Col xs={24} sm={6}>
                   <Form.Item
                     name="reconnect_backoff_max"
                     label="重连最大退避（秒）"
@@ -189,6 +190,16 @@ export default function SettingsPage() {
                     rules={[{ required: true, message: "必填" }]}
                   >
                     <InputNumber min={0} max={3600} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={6}>
+                  <Form.Item
+                    name="port"
+                    label="服务端口"
+                    tooltip="默认 5477；保存后需重启服务，并用新端口访问面板；设置了 RECORDER_PORT 环境变量时以环境变量为准"
+                    rules={[{ required: true, message: "必填" }]}
+                  >
+                    <InputNumber min={1} max={65535} style={{ width: "100%" }} />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={12}>

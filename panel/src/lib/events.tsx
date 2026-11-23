@@ -27,7 +27,7 @@ function wsUrl(): string {
     return `${base.replace(/^http/, "ws")}/ws`;
   }
   if (process.env.NODE_ENV === "development") {
-    const backend = process.env.NEXT_PUBLIC_BACKEND_URL ?? "ws://127.0.0.1:8000";
+    const backend = process.env.NEXT_PUBLIC_BACKEND_URL ?? "ws://127.0.0.1:5477";
     return `${backend}/ws`;
   }
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";

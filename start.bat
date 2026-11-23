@@ -29,7 +29,7 @@ if not exist panel\out (
     echo        To build the web UI: cd panel ^&^& npm install ^&^& npm run build
 )
 
-echo [INFO] Starting server. Web UI will open at http://127.0.0.1:8000
-start "" cmd /c "timeout /t 2 >nul & start http://127.0.0.1:8000"
+echo [INFO] Starting server. The web UI will open automatically.
+start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; $p=$env:RECORDER_PORT; if (-not $p) { try { $p=(ConvertFrom-Json ([IO.File]::ReadAllText('data\settings.json'))).port } catch {} }; if (-not $p) { $p=5477 }; Start-Process ('http://127.0.0.1:' + $p)"
 uv run python main.py
 pause

@@ -1,9 +1,10 @@
 """FastAPI 入口：生命周期管理 + API 路由 + 前端静态托管。
 
-启动：python main.py 或 uvicorn main:app --port 8000
+启动：python main.py 或 uvicorn main:app --port 5477
 """
 
 import asyncio
+import json
 import sys
 import time
 from contextlib import asynccontextmanager, suppress
@@ -157,9 +158,31 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
+def _startup_port() -> int:
+    """服务端口：显式设置的环境变量优先，其次 settings.json 中的 port，最后内置默认。"""
+    if "port" in config.model_fields_set:
+        return config.port
+    try:
+        data = json.loads((config.data_dir / "settings.json").read_text(encoding="utf-8"))
+        raw = data.get("port")
+    except (OSError, ValueError):
+        return config.port
+    if raw is None or raw == "":
+        return config.port
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        return config.port
+    if 1 <= port <= 65535:
+        return port
+    logger.warning("设置中的服务端口非法（{}），回退默认 {}", port, config.port)
+    return config.port
+
+
 def run() -> None:
     import uvicorn
 
+    config.port = _startup_port()
     # 打包(PyInstaller)运行时无法按模块名重新导入，必须直接传 app 对象
     if getattr(sys, "frozen", False):
         uvicorn.run(app, host=config.host, port=config.port, log_config=None)

@@ -21,7 +21,7 @@ class AppConfig(BaseSettings):
     )
 
     host: str = "127.0.0.1"
-    port: int = 8000
+    port: int = 5477
     data_dir: Path = Path("data")          # 数据文件 / 录制文件 / 日志的根目录
     panel_dir: Path = RESOURCE_DIR / "panel" / "out" if FROZEN else Path("panel/out")  # 前端静态产物目录
     log_level: str = "INFO"

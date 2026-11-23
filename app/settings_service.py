@@ -13,6 +13,7 @@ from loguru import logger
 from .config import config
 
 DEFAULTS: dict[str, object] = {
+    "port": 5477,                # 服务监听端口（保存后需重启生效；RECORDER_PORT 环境变量显式设置时优先）
     "check_interval": 60,        # 循环时间（秒）：开播检测间隔
     "end_confirm_delay": 30,     # 下播确认延迟（秒）：检测到下播后等待再次确认，防瞬时断流误收场，0 = 立即结束
     "max_consecutive_failures": 10,  # 连续检测/录制失败上限：达到后结束本次会话交还轮询

@@ -16,7 +16,7 @@ RUN apt-get update \
 
 WORKDIR /app
 ENV RECORDER_HOST=0.0.0.0 \
-    RECORDER_PORT=8000
+    RECORDER_PORT=5477
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv \
@@ -30,6 +30,6 @@ COPY --from=panel-builder /build/out ./panel/out
 
 ENV PATH="/app/.venv/bin:$PATH"
 VOLUME ["/app/data"]
-EXPOSE 8000
+EXPOSE 5477
 
 CMD ["python", "main.py"]
