@@ -46,10 +46,10 @@
 ### 单文件 exe
 
 ```bat
-build_exe.bat
+build.bat
 ```
 
-生成 `dist\StreamGetRecorder.exe`，双击即用（前端已内嵌）。数据目录锚定在 exe 同级 `data/`，换电脑只需带走 exe 和 `data/`；Node.js 可装系统版或放 exe 同目录 `node/` 文件夹。
+脚本会先构建前端静态产物，再打包生成 `dist\StreamGetRecorder.exe`，双击即用（前端已内嵌）。数据目录锚定在 exe 同级 `data/`，换电脑只需带走 exe 和 `data/`；Node.js 可装系统版或放 exe 同目录 `node/` 文件夹。
 
 ### Docker（服务器 / NAS）
 
