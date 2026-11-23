@@ -60,6 +60,10 @@ function clearConnection(): void {
   window.localStorage.removeItem(LEGACY_TOKEN_KEY);
 }
 
+function shouldAutoConnect(config: ConnectionConfig): boolean {
+  return Boolean(config.autoConnect && config.remember && config.token && config.baseUrl);
+}
+
 interface ConnectionContextValue {
   config: ConnectionConfig;
   connected: boolean;
@@ -88,15 +92,18 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [config, setConfig] = useState<ConnectionConfig>(() => loadConnection());
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const [autoTried, setAutoTried] = useState(false);
+  // 有自动连接条件时初始为未尝试（先显示骨架），否则视为已尝试
+  const [autoTried, setAutoTried] = useState(() => !shouldAutoConnect(config));
   const [lastError, setLastError] = useState("");
 
+  // 配置在提交后同步到 ref，供稳定回调读取最新值；渲染期写 ref 会触发 lint
   const configRef = useRef(config);
-  configRef.current = config;
-  const connectedRef = useRef(connected);
-  connectedRef.current = connected;
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
 
   const connect = useCallback(async (override?: Partial<ConnectionConfig>) => {
+    setAutoTried(true);
     const merged = { ...configRef.current, ...override };
     const baseUrl = (merged.baseUrl || "").trim().replace(/\/+$/, "");
     const token = (merged.token ?? "").trim();
@@ -144,11 +151,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   // api.ts 收到 401 时派发该事件：已连接状态下视为令牌失效，强制登出
   useEffect(() => {
     const handler = () => {
-      if (connectedRef.current) logout("访问令牌已失效，请重新连接");
+      if (connected) logout("访问令牌已失效，请重新连接");
     };
     window.addEventListener("recorder:unauthorized", handler);
     return () => window.removeEventListener("recorder:unauthorized", handler);
-  }, [logout]);
+  }, [connected, logout]);
 
   const resetAll = useCallback(() => {
     clearConnection();
@@ -179,17 +186,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // 自动连接：仅记住令牌 + 开启自动连接时，挂载后静默尝试一次
+  const autoAttemptRef = useRef(false);
   useEffect(() => {
-    if (autoTried) return;
-    setAutoTried(true);
-    const cfg = configRef.current;
-    if (cfg.autoConnect && cfg.remember && cfg.token && cfg.baseUrl) {
-      void connect().catch(() => {
-        /* 错误已写入 lastError */
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (autoTried || autoAttemptRef.current) return;
+    autoAttemptRef.current = true;
+    void connect().catch(() => {
+      /* 错误已写入 lastError */
+    });
+  }, [autoTried, connect]);
 
   const value = useMemo<ConnectionContextValue>(
     () => ({ config, connected, connecting, autoTried, lastError, connect, disconnect, logout, resetAll }),

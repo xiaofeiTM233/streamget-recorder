@@ -17,7 +17,7 @@ import {
   Table,
   Typography,
 } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { ColumnsType } from "antd/es/table";
 import { usePlatforms, useSettings, useSettingsMutation, useSummary } from "@/lib/api";
 import { applyLocalToken } from "@/lib/connection";
@@ -75,7 +75,9 @@ export default function SettingsPage() {
   const quality = Form.useWatch("quality", form);
   const pendingRef = useRef<Record<string, unknown>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [creds, setCreds] = useState<CredRow[]>([]);
+  // 凭证表数据直接由表单字段派生，避免在加载数据的 effect 里同步 setState
+  const credentialsRaw = Form.useWatch("platform_credentials", form);
+  const creds = useMemo(() => parseCreds(credentialsRaw), [credentialsRaw]);
 
   useEffect(() => {
     if (data) {
@@ -87,13 +89,11 @@ export default function SettingsPage() {
         output_format: output_format === "audio" ? "auto" : output_format,
         proxy_record_platforms: String(proxy_record_platforms ?? "").split(",").filter(Boolean),
       });
-      setCreds(parseCreds(data.settings.platform_credentials));
     }
   }, [data, form]);
 
   // 更新凭证表：同步进表单；选择/删除即时保存（immediate=true），文本输入在失焦时保存
   const updateCreds = (rows: CredRow[], immediate = true) => {
-    setCreds(rows);
     form.setFieldsValue({ platform_credentials: JSON.stringify(rows) });
     if (immediate) {
       flushAutoSave(true);

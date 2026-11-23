@@ -78,7 +78,10 @@ export function EventProvider({ children }: { children: ReactNode }) {
     },
     [queryClient],
   );
-  handlerRef.current = handleEvent;
+  // 回调引用在提交后同步，避免在渲染期写 ref
+  useEffect(() => {
+    handlerRef.current = handleEvent;
+  }, [handleEvent]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;

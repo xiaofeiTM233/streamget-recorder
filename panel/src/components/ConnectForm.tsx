@@ -89,7 +89,6 @@ export default function ConnectForm() {
                 validator: (_, value: string) => {
                   if (!value) return Promise.resolve();
                   try {
-                    // eslint-disable-next-line no-new
                     new URL(value);
                     return Promise.resolve();
                   } catch {
